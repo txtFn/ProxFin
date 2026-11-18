@@ -331,26 +331,34 @@ func writeM3U(w io.Writer, groups []string) (err error) {
 		}
 	}
 
+	decodeFailures := 0
+	inactiveOrHidden := 0
+	groupFiltered := 0
+	groupLimitSkipped := 0
+	duplicateSkipped := 0
+	streamURLErrors := 0
+	emitted := 0
+
 	for _, dxc := range Data.XEPG.Channels {
 		var xepgChannel XEPGChannelStruct
-		err := json.Unmarshal([]byte(mapToJSON(dxc)), &xepgChannel)
-		if err == nil {
-			if xepgChannel.TvgName == "" {
-				xepgChannel.TvgName = xepgChannel.Name
-			}
-			if xepgChannel.XActive && !xepgChannel.XHideChannel {
-				if len(groups) > 0 {
-
-					if indexOfString(xepgChannel.XGroupTitle, groups) == -1 {
-						goto Done
-					}
-
-				}
-				entries = append(entries, channelEntry{idx: len(entries), ch: xepgChannel})
-			}
+		if decodeErr := json.Unmarshal([]byte(mapToJSON(dxc)), &xepgChannel); decodeErr != nil {
+			decodeFailures++
+			fmt.Printf("[M3U DEBUG] JSON decode failed: %v\n", decodeErr)
+			continue
 		}
-
-	Done:
+		if xepgChannel.TvgName == "" {
+			xepgChannel.TvgName = xepgChannel.Name
+		}
+		if !xepgChannel.XActive || xepgChannel.XHideChannel {
+			inactiveOrHidden++
+			continue
+		}
+		if len(groups) > 0 && indexOfString(xepgChannel.XGroupTitle, groups) == -1 {
+			groupFiltered++
+			fmt.Printf("[M3U DEBUG] Group filtered: id=%q name=%q group=%q\n", xepgChannel.XEPG, xepgChannel.XName, xepgChannel.XGroupTitle)
+			continue
+		}
+		entries = append(entries, channelEntry{idx: len(entries), ch: xepgChannel})
 	}
 
 	// Prepare header
@@ -411,11 +419,13 @@ func writeM3U(w io.Writer, groups []string) (err error) {
 				allowed = 0
 			}
 			if emittedGroupCount[group] >= allowed {
+				groupLimitSkipped++
+				fmt.Printf("[M3U DEBUG] Group limit: id=%q name=%q group=%q expected=%d deactivated=%d allowed=%d emitted=%d\n", channel.XEPG, channel.XName, group, expected, deactivatedPerGroup[group], allowed, emittedGroupCount[group])
 				continue
 			}
 		}
 
-        // Disabling so not to rewrite stream to https domain when disable stream from https set
+		// Disabling so not to rewrite stream to https domain when disable stream from https set
 		if Settings.ForceHttps && Settings.HttpsThreadfinDomain != "" && Settings.ExcludeStreamHttps == false {
 			u, err := url.Parse(channel.URL)
 			if err == nil {
@@ -430,7 +440,7 @@ func writeM3U(w io.Writer, groups []string) (err error) {
 					channel.URL = fmt.Sprintf("https://%s:%d%s", u.Host, Settings.HttpsPort, u.Path)
 				}
 			}
-	    }
+		}
 
 		logo := ""
 		if channel.TvgLogo != "" {
@@ -441,6 +451,8 @@ func writeM3U(w io.Writer, groups []string) (err error) {
 		if err == nil {
 			key := group + "|" + stream
 			if _, ok := seenURLInGroup[key]; ok {
+				duplicateSkipped++
+				fmt.Printf("[M3U DEBUG] Duplicate stream: id=%q name=%q group=%q\n", channel.XEPG, channel.XName, group)
 				continue
 			}
 			seenURLInGroup[key] = struct{}{}
@@ -451,10 +463,13 @@ func writeM3U(w io.Writer, groups []string) (err error) {
 				return err
 			}
 			emittedGroupCount[group] = emittedGroupCount[group] + 1
+			emitted++
+		} else {
+			streamURLErrors++
+			fmt.Printf("[M3U DEBUG] Stream URL creation failed: id=%q name=%q group=%q error=%v\n", channel.XEPG, channel.XName, group, err)
 		}
-
 	}
-
+	fmt.Printf("[M3U DEBUG] Summary: total=%d eligible=%d emitted=%d decode_errors=%d inactive_or_hidden=%d group_filtered=%d group_limit=%d duplicate_stream=%d stream_url_errors=%d\n", len(Data.XEPG.Channels), len(entries), emitted, decodeFailures, inactiveOrHidden, groupFiltered, groupLimitSkipped, duplicateSkipped, streamURLErrors)
 	return nil
 }
 
