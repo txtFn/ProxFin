@@ -335,7 +335,7 @@ func writeM3U(w io.Writer, groups []string) (err error) {
 	inactiveOrHidden := 0
 	groupFiltered := 0
 	groupLimitSkipped := 0
-	duplicateSkipped := 0
+	duplicateDetected := 0
 	streamURLErrors := 0
 	emitted := 0
 
@@ -398,7 +398,8 @@ func writeM3U(w io.Writer, groups []string) (err error) {
 		return chI < chJ
 	})
 
-	// Avoid duplicate exact stream URLs within the same group and cap per-group by expected minus deactivated
+	// Preserve all channel entries, including those sharing a stream URL within a group.
+	// Retain duplicate detection for diagnostics only; cap per-group by expected minus deactivated.
 	seenURLInGroup := make(map[string]struct{})
 	emittedGroupCount := make(map[string]int)
 	for _, e := range entries {
@@ -451,11 +452,11 @@ func writeM3U(w io.Writer, groups []string) (err error) {
 		if err == nil {
 			key := group + "|" + stream
 			if _, ok := seenURLInGroup[key]; ok {
-				duplicateSkipped++
-				fmt.Printf("[M3U DEBUG] Duplicate stream: id=%q name=%q group=%q\n", channel.XEPG, channel.XName, group)
-				continue
+				duplicateDetected++
+				fmt.Printf("[M3U DEBUG] Duplicate stream retained: id=%q name=%q group=%q\n", channel.XEPG, channel.XName, group)
+			} else {
+				seenURLInGroup[key] = struct{}{}
 			}
-			seenURLInGroup[key] = struct{}{}
 			if _, err = io.WriteString(w, parameter); err != nil {
 				return err
 			}
@@ -469,7 +470,7 @@ func writeM3U(w io.Writer, groups []string) (err error) {
 			fmt.Printf("[M3U DEBUG] Stream URL creation failed: id=%q name=%q group=%q error=%v\n", channel.XEPG, channel.XName, group, err)
 		}
 	}
-	fmt.Printf("[M3U DEBUG] Summary: total=%d eligible=%d emitted=%d decode_errors=%d inactive_or_hidden=%d group_filtered=%d group_limit=%d duplicate_stream=%d stream_url_errors=%d\n", len(Data.XEPG.Channels), len(entries), emitted, decodeFailures, inactiveOrHidden, groupFiltered, groupLimitSkipped, duplicateSkipped, streamURLErrors)
+	fmt.Printf("[M3U DEBUG] Summary: total=%d eligible=%d emitted=%d decode_errors=%d inactive_or_hidden=%d group_filtered=%d group_limit=%d duplicate_stream_retained=%d stream_url_errors=%d\n", len(Data.XEPG.Channels), len(entries), emitted, decodeFailures, inactiveOrHidden, groupFiltered, groupLimitSkipped, duplicateDetected, streamURLErrors)
 	return nil
 }
 
