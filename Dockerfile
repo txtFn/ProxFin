@@ -95,10 +95,6 @@ COPY --from=builder /app/proxfin $PROXFIN_BIN/
 COPY docker-entrypoint.sh /usr/local/bin/proxfin-entrypoint
 RUN chmod +rx $PROXFIN_BIN/proxfin /usr/local/bin/proxfin-entrypoint
 
-# Configure container volume mappings
-VOLUME $PROXFIN_CONF
-VOLUME $PROXFIN_TEMP
-
 EXPOSE $PROXFIN_PORT
 
 # Uses /home/threadfin/conf instead when a Threadfin volume is mounted there
