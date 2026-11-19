@@ -130,6 +130,14 @@ func bufferCommand(program string, src streambuf.Source) (path string, args []st
 	// Experiment: remove -copyts for Forever Kids only.
 	// All other channels keep their existing FFmpeg options.
 	if program == "ffmpeg" && isForeverKidsURL(src.URL) {
+		// Enable additional FFmpeg diagnostics for Forever Kids only.
+		for i := 0; i < len(args)-1; i++ {
+			if args[i] == "-loglevel" {
+				args[i+1] = "warning"
+				break
+			}
+		}
+
 		filtered := make([]string, 0, len(args))
 
 		for _, arg := range args {
