@@ -42,13 +42,18 @@ func bufferCommand(program string, src streambuf.Source) (path string, args []st
         url := src.URL
 
         if program == "ffmpeg" && url == foreverKidsURL {
-                resolvedURL, resolveErr := resolveForeverKidsHLS(url)
-                if resolveErr != nil {
-                        return "", nil, fmt.Errorf("Forever Kids HLS resolution failed: %w", resolveErr)
-                }
-                url = resolvedURL
-                showInfo("Forever Kids: selected HLS bandwidth 3321280")
-        }
+    	    resolvedURL, resolveErr := resolveForeverKidsHLS(url)
+
+    	    if resolveErr != nil {
+        	showInfo(fmt.Sprintf(
+            	    "Forever Kids: HLS resolution failed (%v); trying original URL",
+            	    resolveErr,
+        	))
+    	    } else {
+        	url = resolvedURL
+        	showInfo("Forever Kids: selected HLS bandwidth 3321280")
+    	    }
+	}
 
         t := playlistType(src.PlaylistID)
 	proxyIP := getProviderParameter(src.PlaylistID, t, "http_proxy.ip")
