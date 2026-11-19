@@ -1,0 +1,34 @@
+
+name: Test ProxFin Build
+
+on:
+  push:
+    branches:
+      - test-forever-kids
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Compile ProxFin
+        run: CGO_ENABLED=0 go build -mod=mod -trimpath -o proxfin .
+
+      - name: Run Go tests
+        run: go test ./...
