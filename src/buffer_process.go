@@ -39,8 +39,23 @@ func bufferLauncher(program string) streambuf.Launcher {
 // bufferCommand builds the command line from the settings, with the user
 // agent, proxy and headers of the source's playlist.
 func bufferCommand(program string, src streambuf.Source) (path string, args []string, err error) {
-	url := src.URL
-	t := playlistType(src.PlaylistID)
+        url := src.URL
+
+        if program == "ffmpeg" && url == foreverKidsURL {
+    	    resolvedURL, resolveErr := resolveForeverKidsHLS(url)
+
+    	    if resolveErr != nil {
+        	showInfo(fmt.Sprintf(
+            	    "Forever Kids: HLS resolution failed (%v); trying original URL",
+            	    resolveErr,
+        	))
+    	    } else {
+        	url = resolvedURL
+        	showInfo("Forever Kids: selected HLS bandwidth 3321280")
+    	    }
+	}
+
+        t := playlistType(src.PlaylistID)
 	proxyIP := getProviderParameter(src.PlaylistID, t, "http_proxy.ip")
 	proxyPort := getProviderParameter(src.PlaylistID, t, "http_proxy.port")
 	referer := getProviderParameter(src.PlaylistID, t, "http_headers.referer")
