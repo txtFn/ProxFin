@@ -222,7 +222,19 @@ func Stream(w http.ResponseWriter, r *http.Request) {
 		showInfo("Streaming Info:URL was passed to the client.")
 		showInfo("Streaming Info:" + System.Name + " is no longer involved, the client connects directly to the streaming server.")
 	default:
-		bufferingStream(streamInfo.PlaylistID, streamInfo.URL, streamInfo.BackupChannel1, streamInfo.BackupChannel2, streamInfo.BackupChannel3, streamInfo.Name, w, r)
+	if u, err := url.Parse(streamInfo.URL); err == nil {
+	showInfo(fmt.Sprintf(
+	"STREAM DEBUG: channel=%q scheme=%s host=%s port=%s forceHttps=%t excludeStreamHttps=%t",
+	streamInfo.Name,
+	u.Scheme,
+	u.Hostname(),
+	u.Port(),
+	forceHttps,
+	noStreamHttps,
+	))
+	}
+
+	bufferingStream(streamInfo.PlaylistID, streamInfo.URL, streamInfo.BackupChannel1, streamInfo.BackupChannel2, streamInfo.BackupChannel3, streamInfo.Name, w, r)
 	}
 	return
 }
