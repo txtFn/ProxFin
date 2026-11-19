@@ -127,6 +127,21 @@ func bufferCommand(program string, src streambuf.Source) (path string, args []st
 		}
 	}
 
+	// Experiment: remove -copyts for Forever Kids only.
+	// All other channels keep their existing FFmpeg options.
+	if program == "ffmpeg" && src.URL == foreverKidsURL {
+		filtered := make([]string, 0, len(args))
+
+		for _, arg := range args {
+			if arg != "-copyts" {
+				filtered = append(filtered, arg)
+			}
+		}
+
+		args = filtered
+		showInfo("Forever Kids: testing FFmpeg without -copyts")
+	}
+
 	return path, args, nil
 }
 
