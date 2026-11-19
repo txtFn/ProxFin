@@ -129,12 +129,20 @@ func joinStream(ctx context.Context, playlistID, url, label string, backups []*B
 		program = "ffmpeg" // also the old "threadfin" value, which has no buffer of its own any more
 	}
 
+	cfg := bufferConfig()
+
+	// Give Forever Kids a larger initial playback cushion.
+	if isForeverKidsURL(url) {
+		cfg.Prebuffer = 4 << 20
+		cfg.PrebufferMaxWait = 10 * time.Second
+	}
+
 	viewer, err := streamManager.Join(ctx, streambuf.Request{
 		Channel: channelName,
 		Program: strings.ToUpper(program),
 		Sources: sources,
 		Launch:  bufferLauncher(program),
-		Config:  bufferConfig(),
+		Config:  cfg,
 	})
 	return viewer, primary, err
 }
