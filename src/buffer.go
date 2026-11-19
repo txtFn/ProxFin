@@ -207,7 +207,11 @@ func streamToClient(v *streambuf.Viewer, w http.ResponseWriter, r *http.Request)
 	wbuf := (*pooled)[:0]
 	write := func(b []byte) bool {
 		_, err := w.Write(b)
-		return err == nil
+		if err != nil {
+			showInfo(fmt.Sprintf("Streaming Status:Channel: %s - HTTP write failed: %v", v.Channel(), err))
+			return false
+		}
+		return true
 	}
 
 	for {
@@ -237,6 +241,7 @@ func streamToClient(v *streambuf.Viewer, w http.ResponseWriter, r *http.Request)
 				wbuf = wbuf[:0]
 			}
 			if ferr := rc.Flush(); ferr != nil {
+				showInfo(fmt.Sprintf("Streaming Status:Channel: %s - HTTP flush failed: %v", v.Channel(), ferr))
 				return
 			}
 		}
