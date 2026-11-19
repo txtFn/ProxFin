@@ -41,7 +41,7 @@ func bufferLauncher(program string) streambuf.Launcher {
 func bufferCommand(program string, src streambuf.Source) (path string, args []string, err error) {
         url := src.URL
 
-        if program == "ffmpeg" && url == foreverKidsURL {
+        if program == "ffmpeg" && isForeverKidsURL(url) {
     	    resolvedURL, resolveErr := resolveForeverKidsHLS(url)
 
     	    if resolveErr != nil {
@@ -129,7 +129,7 @@ func bufferCommand(program string, src streambuf.Source) (path string, args []st
 
 	// Experiment: remove -copyts for Forever Kids only.
 	// All other channels keep their existing FFmpeg options.
-	if program == "ffmpeg" && src.URL == foreverKidsURL {
+	if program == "ffmpeg" && isForeverKidsURL(src.URL) {
 		filtered := make([]string, 0, len(args))
 
 		for _, arg := range args {

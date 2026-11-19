@@ -15,8 +15,12 @@ import (
 const foreverKidsURL = "https://jmp2.uk:443/plu-56171fafada51f8004c4b40f.m3u8"
 const foreverKidsBandwidth = "3321280"
 
+func isForeverKidsURL(rawURL string) bool {
+    return strings.TrimSuffix(rawURL, "?") == foreverKidsURL
+}
+
 func resolveForeverKidsHLS(originalURL string) (string, error) {
-	if originalURL != foreverKidsURL {
+	if !isForeverKidsURL(originalURL) {
 		return originalURL, nil
 	}
 
