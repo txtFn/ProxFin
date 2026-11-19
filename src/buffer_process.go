@@ -147,7 +147,16 @@ func bufferCommand(program string, src streambuf.Source) (path string, args []st
 		}
 
 		args = filtered
-		showInfo("Forever Kids: testing FFmpeg without -copyts")
+
+		// Normalize negative output timestamps for Forever Kids only.
+		for i, arg := range args {
+			if arg == "-f" && i+1 < len(args) {
+				args = append(args[:i], append([]string{"-avoid_negative_ts", "make_zero"}, args[i:]...)...)
+				break
+			}
+		}
+
+		showInfo("Forever Kids: testing FFmpeg without -copyts and with timestamp normalization")
 	}
 
 	return path, args, nil
