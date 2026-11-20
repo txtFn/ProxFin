@@ -12,7 +12,7 @@ import (
 "time"
 )
 
-const hlsTestChannel = "8dfcf6c064df003a265bed98f8798918"
+const hlsTestChannel = "34f819bf4eca2fbc0c5ab121399e20fb"
 
 var (
 hlsMu      sync.Mutex
