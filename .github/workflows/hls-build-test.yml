@@ -25,4 +25,5 @@ jobs:
           cache: true
 
       - name: Compile ProxFin
-        run: go build ./...
+        run: go build -mod=mod ./...
+
