@@ -1,0 +1,28 @@
+
+name: HLS Build Test
+
+on:
+  push:
+    branches:
+      - feature/hls-streaming
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: Compile ProxFin
+        run: go build ./...
