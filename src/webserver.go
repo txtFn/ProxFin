@@ -157,11 +157,11 @@ func Stream(w http.ResponseWriter, r *http.Request) {
 
 	systemMutex.Lock()
 	forceHttps := Settings.ForceHttps
-    noStreamHttps := Settings.ExcludeStreamHttps
+	noStreamHttps := Settings.ExcludeStreamHttps
 	systemMutex.Unlock()
 
 	// Dont Change Source M3Us to use HTTPs when forceHttps set and Exclude Streams from https
-    if forceHttps && noStreamHttps == false {
+	if forceHttps && noStreamHttps == false {
 		u, err := url.Parse(streamInfo.URL)
 		if err == nil {
 			u.Scheme = "https"
@@ -273,7 +273,7 @@ func PlaylistAndGuide(w http.ResponseWriter, r *http.Request) {
 		// often hundreds of MB, and the string and []byte conversions held
 		// four copies per request. ServeContent also answers conditional
 		// and range requests.
-		f, err := os.Open(file)
+		f, err := openSharedFile(file)
 		if err != nil {
 			httpStatusError(w, r, 404)
 			return
@@ -330,7 +330,20 @@ func PlaylistAndGuide(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
-			http.ServeFile(w, r, m3uFilePath)
+			f, err := openSharedFile(m3uFilePath)
+			if err != nil {
+				httpStatusError(w, r, 404)
+				return
+			}
+			defer f.Close()
+
+			info, err := f.Stat()
+			if err != nil || info.IsDir() {
+				httpStatusError(w, r, 404)
+				return
+			}
+
+			http.ServeContent(w, r, info.Name(), info.ModTime(), f)
 			return
 		}
 
@@ -549,7 +562,7 @@ func WS(w http.ResponseWriter, r *http.Request) {
 				ShowError(err, 1022)
 			} else {
 				return
-				break
+
 			}
 			return
 

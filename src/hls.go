@@ -1,230 +1,292 @@
 package src
 
 import (
-"fmt"
-"net/http"
-"os"
-"os/exec"
-"path/filepath"
-"regexp"
-"strings"
-"sync"
-"time"
+	"fmt"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"sync"
+	"time"
 )
 
 const hlsTestChannel = "34f819bf4eca2fbc0c5ab121399e20fb"
 
 var (
-hlsMu      sync.Mutex
-hlsCurrent *hlsSession
-hlsFileRE  = regexp.MustCompile(`^seg[0-9]{6,}.ts$`)
+	hlsMu        sync.Mutex
+	hlsSessions  = make(map[string]*hlsSession)
+	hlsFileRE    = regexp.MustCompile(`^seg[0-9]{6,}.ts$`)
+	hlsChannelRE = regexp.MustCompile(`^[a-fA-F0-9]{32}$`)
 )
 
 type hlsSession struct {
-dir      string
-cmd      *exec.Cmd
-done     chan struct{}
-mu       sync.Mutex
-readers  sync.WaitGroup
-stopping bool
+	dir           string
+	cmd           *exec.Cmd
+	done          chan struct{}
+	registered    chan struct{}
+	mu            sync.Mutex
+	readers       sync.WaitGroup
+	stopping      bool
+	lastAccess    time.Time
+	activeReaders int
 }
 
 func HLSHandler(w http.ResponseWriter, r *http.Request) {
-if r.Method != http.MethodGet && r.Method != http.MethodHead {
-http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-return
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/hls/"), "/")
+	if len(parts) != 2 || !hlsChannelRE.MatchString(parts[0]) {
+		http.NotFound(w, r)
+		return
+	}
+
+	filename := parts[1]
+	if filename != "index.m3u8" && !hlsFileRE.MatchString(filename) {
+		http.NotFound(w, r)
+		return
+	}
+
+	channelID := parts[0]
+
+	hlsMu.Lock()
+	s := hlsSessions[channelID]
+
+	if s == nil {
+		if filename != "index.m3u8" {
+			hlsMu.Unlock()
+			http.NotFound(w, r)
+			return
+		}
+
+		var err error
+		s, err = startHLSSession(channelID)
+		if err != nil {
+			hlsMu.Unlock()
+			http.Error(w, "Unable to start HLS stream", http.StatusBadGateway)
+			return
+		}
+		hlsSessions[channelID] = s
+		close(s.registered)
+		go monitorHLSSession(channelID, s)
+	}
+
+	s.mu.Lock()
+	if s.stopping {
+		s.mu.Unlock()
+		hlsMu.Unlock()
+		http.Error(w, "HLS session restarting", http.StatusServiceUnavailable)
+		return
+	}
+
+	s.lastAccess = time.Now()
+	s.activeReaders++
+	s.readers.Add(1)
+	s.mu.Unlock()
+	hlsMu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.activeReaders--
+		s.mu.Unlock()
+		s.readers.Done()
+	}()
+
+	path := filepath.Join(s.dir, filename)
+
+	if filename == "index.m3u8" {
+		deadline := time.Now().Add(20 * time.Second)
+
+		for {
+			if info, err := os.Stat(path); err == nil && info.Size() > 0 {
+				break
+			}
+
+			select {
+			case <-s.done:
+				http.Error(w, "HLS process stopped", http.StatusBadGateway)
+				return
+			case <-r.Context().Done():
+				return
+			default:
+			}
+
+			if time.Now().After(deadline) {
+				http.Error(w, "HLS playlist not ready", http.StatusGatewayTimeout)
+				return
+			}
+
+			time.Sleep(250 * time.Millisecond)
+		}
+
+		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+	} else {
+		w.Header().Set("Content-Type", "video/mp2t")
+	}
+
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	http.ServeFile(w, r, path)
 }
 
-parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/hls/"), "/")
-if len(parts) != 2 || parts[0] != hlsTestChannel {
-http.NotFound(w, r)
-return
+func startHLSSession(channelID string) (*hlsSession, error) {
+	info, err := getStreamInfo(channelID)
+	if err != nil {
+		return nil, err
+	}
+	if !isHTTPURL(info.URL) {
+		return nil, fmt.Errorf("HLS requires an HTTP source")
+	}
+
+	dir, err := os.MkdirTemp("", "proxfin-hls-")
+	if err != nil {
+		return nil, err
+	}
+
+	path := Settings.FFmpegPath
+	if path == "" {
+		path = "ffmpeg"
+	}
+
+	url := info.URL
+	if Settings.FFmpegForceHttp {
+		url = strings.Replace(url, "https://", "http://", 1)
+	}
+
+	args := []string{"-hide_banner", "-loglevel", "warning"}
+
+	if Settings.UserAgent != "" {
+		args = append(args, "-user_agent", Settings.UserAgent)
+	}
+
+	t := playlistType(info.PlaylistID)
+	proxyIP := getProviderParameter(info.PlaylistID, t, "http_proxy.ip")
+	proxyPort := getProviderParameter(info.PlaylistID, t, "http_proxy.port")
+	referer := getProviderParameter(info.PlaylistID, t, "http_headers.referer")
+	origin := getProviderParameter(info.PlaylistID, t, "http_headers.origin")
+
+	if proxyIP != "" && proxyPort != "" {
+		args = append(args, "-http_proxy",
+			fmt.Sprintf("http://%s:%s", proxyIP, proxyPort))
+	}
+
+	args = append(args, ffmpegReconnectArgs(path)...)
+
+	var headers string
+	if referer != "" {
+		headers += "Referer: " + referer + "\r\n"
+	}
+	if origin != "" {
+		headers += "Origin: " + origin + "\r\n"
+	}
+	if headers != "" {
+		args = append(args, "-headers", headers)
+	}
+
+	args = append(args,
+		"-analyzeduration", "1000000",
+		"-probesize", "1000000",
+		"-i", url,
+		"-map", "0:v:0?",
+		"-map", "0:a:0?",
+		"-c:v", "copy",
+		"-c:a", "aac",
+		"-b:a", "192k",
+		"-ac", "2",
+		"-f", "hls",
+		"-hls_time", "4",
+		"-hls_list_size", "6",
+		"-hls_delete_threshold", "2",
+		"-hls_flags", "delete_segments+omit_endlist",
+		"-hls_segment_filename", filepath.Join(dir, "seg%06d.ts"),
+		filepath.Join(dir, "index.m3u8"),
+	)
+
+	cmd := exec.Command(path, args...)
+	setProcessGroup(cmd)
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+
+	if err := cmd.Start(); err != nil {
+		os.RemoveAll(dir)
+		return nil, err
+	}
+
+	s := &hlsSession{
+		dir:  dir,
+		cmd:  cmd,
+		done: make(chan struct{}), registered: make(chan struct{}), lastAccess: time.Now(),
+	}
+
+	go func() {
+		cmd.Wait()
+
+		// Wait until the HLS session has been registered.
+		<-s.registered
+
+		// Mark the session as stopping before clearing it.
+		hlsMu.Lock()
+		s.mu.Lock()
+		s.stopping = true
+		s.mu.Unlock()
+		if hlsSessions[channelID] == s {
+			delete(hlsSessions, channelID)
+		}
+		hlsMu.Unlock()
+
+		close(s.done)
+
+		// Existing HTTP requests must finish before deletion.
+		s.readers.Wait()
+		os.RemoveAll(dir)
+	}()
+
+	return s, nil
 }
 
-filename := parts[1]
-if filename != "index.m3u8" && !hlsFileRE.MatchString(filename) {
-http.NotFound(w, r)
-return
-}
+// monitorHLSSession stops an HLS session after five minutes without activity.
+func monitorHLSSession(channelID string, s *hlsSession) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
 
-hlsMu.Lock()
-s := hlsCurrent
+	for {
+		select {
+		case <-s.done:
+			return
 
-if s == nil {
-if filename != "index.m3u8" {
-hlsMu.Unlock()
-http.NotFound(w, r)
-return
-}
+		case <-ticker.C:
+			hlsMu.Lock()
 
-var err error
-s, err = startHLSSession()
-if err != nil {
-hlsMu.Unlock()
-http.Error(w, "Unable to start HLS stream", http.StatusBadGateway)
-return
-}
-hlsCurrent = s
-}
+			if hlsSessions[channelID] != s {
+				hlsMu.Unlock()
+				return
+			}
 
-s.mu.Lock()
-if s.stopping {
-s.mu.Unlock()
-hlsMu.Unlock()
-http.Error(w, "HLS session restarting", http.StatusServiceUnavailable)
-return
-}
+			s.mu.Lock()
 
-s.readers.Add(1)
-s.mu.Unlock()
-hlsMu.Unlock()
-defer s.readers.Done()
+			if s.stopping {
+				s.mu.Unlock()
+				hlsMu.Unlock()
+				return
+			}
 
-path := filepath.Join(s.dir, filename)
+			idle := s.activeReaders == 0 &&
+				time.Since(s.lastAccess) >= 5*time.Minute
 
-if filename == "index.m3u8" {
-deadline := time.Now().Add(20 * time.Second)
+			if idle {
+				s.stopping = true
+			}
 
-for {
-if info, err := os.Stat(path); err == nil && info.Size() > 0 {
-break
-}
+			s.mu.Unlock()
+			hlsMu.Unlock()
 
-select {
-case <-s.done:
-http.Error(w, "HLS process stopped", http.StatusBadGateway)
-return
-case <-r.Context().Done():
-return
-default:
-}
-
-if time.Now().After(deadline) {
-http.Error(w, "HLS playlist not ready", http.StatusGatewayTimeout)
-return
-}
-
-time.Sleep(250 * time.Millisecond)
-}
-
-w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
-} else {
-w.Header().Set("Content-Type", "video/mp2t")
-}
-
-w.Header().Set("Cache-Control", "no-store")
-w.Header().Set("Access-Control-Allow-Origin", "*")
-http.ServeFile(w, r, path)
-}
-
-func startHLSSession() (*hlsSession, error) {
-info, err := getStreamInfo(hlsTestChannel)
-if err != nil {
-return nil, err
-}
-if !isHTTPURL(info.URL) {
-return nil, fmt.Errorf("HLS requires an HTTP source")
-}
-
-dir, err := os.MkdirTemp("", "proxfin-hls-")
-if err != nil {
-return nil, err
-}
-
-path := Settings.FFmpegPath
-if path == "" {
-path = "ffmpeg"
-}
-
-url := info.URL
-if Settings.FFmpegForceHttp {
-url = strings.Replace(url, "https://", "http://", 1)
-}
-
-args := []string{"-hide_banner", "-loglevel", "warning"}
-
-if Settings.UserAgent != "" {
-args = append(args, "-user_agent", Settings.UserAgent)
-}
-
-t := playlistType(info.PlaylistID)
-proxyIP := getProviderParameter(info.PlaylistID, t, "http_proxy.ip")
-proxyPort := getProviderParameter(info.PlaylistID, t, "http_proxy.port")
-referer := getProviderParameter(info.PlaylistID, t, "http_headers.referer")
-origin := getProviderParameter(info.PlaylistID, t, "http_headers.origin")
-
-if proxyIP != "" && proxyPort != "" {
-args = append(args, "-http_proxy",
-fmt.Sprintf("http://%s:%s", proxyIP, proxyPort))
-}
-
-args = append(args, ffmpegReconnectArgs(path)...)
-
-var headers string
-if referer != "" {
-headers += "Referer: " + referer + "\r\n"
-}
-if origin != "" {
-headers += "Origin: " + origin + "\r\n"
-}
-if headers != "" {
-args = append(args, "-headers", headers)
-}
-
-args = append(args,
-"-analyzeduration", "1000000",
-"-probesize", "1000000",
-"-i", url,
-"-map", "0:v:0?",
-"-map", "0:a:0?",
-"-c:v", "copy",
-"-c:a", "aac",
-"-b:a", "192k",
-"-ac", "2",
-"-f", "hls",
-"-hls_time", "4",
-"-hls_list_size", "6",
-"-hls_delete_threshold", "2",
-"-hls_flags", "delete_segments+omit_endlist",
-"-hls_segment_filename", filepath.Join(dir, "seg%06d.ts"),
-filepath.Join(dir, "index.m3u8"),
-)
-
-cmd := exec.Command(path, args...)
-setProcessGroup(cmd)
-cmd.Stdout = nil
-cmd.Stderr = nil
-
-if err := cmd.Start(); err != nil {
-os.RemoveAll(dir)
-return nil, err
-}
-
-s := &hlsSession{
-dir:  dir,
-cmd:  cmd,
-done: make(chan struct{}),
-}
-
-go func() {
-cmd.Wait()
-
-// Mark the session as stopping before clearing it.
-hlsMu.Lock()
-s.mu.Lock()
-s.stopping = true
-s.mu.Unlock()
-if hlsCurrent == s {
-hlsCurrent = nil
-}
-hlsMu.Unlock()
-
-close(s.done)
-
-// Existing HTTP requests must finish before deletion.
-s.readers.Wait()
-os.RemoveAll(dir)
-}()
-
-return s, nil
+			if idle {
+				killProcessGroup(s.cmd)
+				return
+			}
+		}
+	}
 }

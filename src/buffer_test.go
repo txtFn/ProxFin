@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"proxfin/src/internal/streambuf"
+	"runtime"
+	"strconv"
 )
 
 // These tests drive the whole buffer (HTTP handler, stream manager, real
@@ -29,16 +31,47 @@ import (
 //	hang    - emit ~1.3 MB/s for ~1 s, then stop sending without exiting
 //	          (upstream stalled)
 //	fail    - print an error and exit at once (e.g. HTTP 404)
-const fakeFFmpegScript = `#!/bin/sh
-burst() { head -c 65536 /dev/zero; sleep 0.05; }
-case "$1" in
-  stream*) while :; do burst; done ;;
-  short*)  i=0; while [ $i -lt 60 ]; do burst; i=$((i+1)); done ;;
-  hang*)   i=0; while [ $i -lt 20 ]; do burst; i=$((i+1)); done; exec sleep 3600 ;;
-  fail*)   echo "Server returned 404 Not Found" >&2; exit 1 ;;
-esac
-`
+const fakeFFmpegSource = `package main
 
+import (
+    "fmt"
+    "os"
+    "strings"
+    "time"
+)
+
+func burst() {
+    data := make([]byte, 65536)
+    os.Stdout.Write(data)
+    time.Sleep(50 * time.Millisecond)
+}
+
+func main() {
+    mode := ""
+    if len(os.Args) > 1 {
+        mode = os.Args[1]
+    }
+
+    switch {
+    case strings.HasPrefix(mode, "stream"):
+        for {
+            burst()
+        }
+    case strings.HasPrefix(mode, "short"):
+        for i := 0; i < 60; i++ {
+            burst()
+        }
+    case strings.HasPrefix(mode, "hang"):
+        for i := 0; i < 20; i++ {
+            burst()
+        }
+        time.Sleep(time.Hour)
+    case strings.HasPrefix(mode, "fail"):
+        fmt.Fprintln(os.Stderr, "Server returned 404 Not Found")
+        os.Exit(1)
+    }
+}
+`
 const testPlaylistID = "Mtest"
 
 var (
@@ -60,11 +93,24 @@ func setupBufferTest(t testing.TB) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		bufferTestScript = filepath.Join(dir, "ffmpeg")
-		if err := os.WriteFile(bufferTestScript, []byte(fakeFFmpegScript), 0755); err != nil {
+
+		helperSource := filepath.Join(dir, "fake_ffmpeg.go")
+		bufferTestScript = filepath.Join(dir, "ffmpeg.exe")
+
+		if err := os.WriteFile(
+			helperSource,
+			[]byte(fakeFFmpegSource),
+			0600,
+		); err != nil {
 			t.Fatal(err)
 		}
 
+		cmd := exec.Command("go", "build", "-o", bufferTestScript, helperSource)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GO111MODULE=off")
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("building fake FFmpeg: %v\n%s", err, output)
+		}
 		System.Flag.Info = true // keep the test output readable
 		loadHTMLMap()           // embedded files, for the tuner-limit video
 
@@ -103,12 +149,47 @@ func setupBufferTest(t testing.TB) {
 // countProcesses returns how many running processes have arg in their
 // command line (Linux /proc).
 func countProcesses(arg string) (n int) {
+	if runtime.GOOS == "windows" {
+		cmd := exec.Command(
+			"powershell.exe",
+			"-NoProfile",
+			"-NonInteractive",
+			"-Command",
+			`$needle = $env:PROXFIN_PROCESS_MATCH
+             @(Get-CimInstance Win32_Process |
+               Where-Object {
+                   $_.CommandLine -and
+                   $_.CommandLine.Contains($needle)
+               }).Count`,
+		)
+
+		cmd.Env = append(
+			os.Environ(),
+			"PROXFIN_PROCESS_MATCH="+arg,
+		)
+
+		output, err := cmd.Output()
+		if err != nil {
+			return 0
+		}
+
+		count, err := strconv.Atoi(strings.TrimSpace(string(output)))
+		if err != nil {
+			return 0
+		}
+
+		return count
+	}
+
 	dirs, _ := filepath.Glob("/proc/[0-9]*/cmdline")
+
 	for _, d := range dirs {
-		if b, err := os.ReadFile(d); err == nil && strings.Contains(string(b), arg) {
+		if b, err := os.ReadFile(d); err == nil &&
+			strings.Contains(string(b), arg) {
 			n++
 		}
 	}
+
 	return
 }
 
@@ -608,14 +689,14 @@ func TestBufferShutdownKillsEveryProcess(t *testing.T) {
 			t.Fatalf("stream did not start: %v", err)
 		}
 	}
-	if n := countProcesses(marker); n != 3 {
+	if n := countProcesses(bufferTestScript); n != 3 {
 		t.Fatalf("%d source processes running, want 3", n)
 	}
 
 	if err := m.Shutdown(5 * time.Second); err != nil {
 		t.Fatalf("Shutdown: %v", err)
 	}
-	if n := countProcesses(marker); n != 0 {
+	if n := countProcesses(bufferTestScript); n != 0 {
 		t.Errorf("%d source processes still running after Shutdown", n)
 	}
 	if st := m.Stats(); st.Streams != 0 {

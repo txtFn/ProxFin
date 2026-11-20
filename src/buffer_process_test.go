@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -63,19 +64,67 @@ func TestFFmpegReconnectOnlyForHTTPSources(t *testing.T) {
 // Older ffmpeg builds lack some options; only the supported ones are used.
 func TestFFmpegReconnectArgsFollowTheInstalledFFmpeg(t *testing.T) {
 	dir := t.TempDir()
-	write := func(name, help string) string {
-		p := filepath.Join(dir, name)
-		os.WriteFile(p, []byte("#!/bin/sh\ncat <<'EOF'\n"+help+"\nEOF\n"), 0755)
-		return p
-	}
-	old := write("ffmpeg41", "http AVOptions:\n  -reconnect         <boolean>\n  -reconnect_streamed <boolean>\n  -reconnect_delay_max <int>")
-	none := write("noreconnect", "Unknown protocol 'http'.")
 
-	if got := strings.Join(ffmpegReconnectArgs(old), " "); got != "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 2" {
-		t.Fatalf("ffmpeg without reconnect_on_network_error: %q", got)
+	helperSource := `package main
+
+import (
+        "fmt"
+        "os"
+)
+
+func main() {
+        fmt.Print(os.Getenv("PROXFIN_TEST_FFMPEG_HELP"))
+}
+`
+
+	source := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(source, []byte(helperSource), 0600); err != nil {
+		t.Fatal(err)
 	}
-	if got := ffmpegReconnectArgs(none); len(got) != 0 {
-		t.Fatalf("ffmpeg without http reconnect: %q", got)
+
+	helper := filepath.Join(dir, "fake-ffmpeg")
+	if runtime.GOOS == "windows" {
+		helper += ".exe"
+	}
+
+	cmd := exec.Command("go", "build", "-o", helper, source)
+
+	// Build outside the ProxFin module and disable module mode.
+	// The helper only uses Go standard-library packages.
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GO111MODULE=off")
+
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("building fake ffmpeg: %v\n%s", err, output)
+	}
+
+	t.Setenv("PROXFIN_TEST_FFMPEG_HELP",
+		"http AVOptions:\n  -reconnect         <boolean>\n  -reconnect_streamed <boolean>\n  -reconnect_delay_max <int>")
+
+	if got := strings.Join(ffmpegReconnectArgs(helper), " "); got != "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 2" {
+		t.Fatalf("unexpected reconnect options: %q", got)
+	}
+
+	t.Setenv("PROXFIN_TEST_FFMPEG_HELP", "Unknown protocol 'http'.")
+
+	// Use a different executable path because reconnect options
+	// are cached by FFmpeg executable path.
+	noHTTPHelper := filepath.Join(
+		dir,
+		"fake-ffmpeg-no-http"+filepath.Ext(helper),
+	)
+
+	helperBytes, err := os.ReadFile(helper)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(noHTTPHelper, helperBytes, 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := ffmpegReconnectArgs(noHTTPHelper); len(got) != 0 {
+		t.Fatalf("ffmpeg without HTTP reconnect support: %q", got)
 	}
 }
 

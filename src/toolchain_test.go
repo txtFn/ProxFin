@@ -122,25 +122,73 @@ func TestAtomicFileReplacement(t *testing.T) {
 	write(versions[0])
 
 	var stop atomic.Bool
-	var partial atomic.Int32
+	var openErrors atomic.Int32
+	var readErrors atomic.Int32
+	var closeErrors atomic.Int32
+	var mismatches atomic.Int32
 	var wg sync.WaitGroup
+	var firstOpenError, firstReadError, firstCloseError string
+	var firstMismatch int
+
 	wg.Add(1)
+
 	go func() {
 		defer wg.Done()
 		for !stop.Load() {
-			b, err := os.ReadFile(file)
-			if err != nil || !(bytes.Equal(b, versions[0]) || bytes.Equal(b, versions[1])) {
-				partial.Add(1)
+			f, err := openSharedFile(file)
+			if err != nil {
+				openErrors.Add(1)
+				if firstOpenError == "" {
+					firstOpenError = err.Error()
+				}
+				continue
+			}
+
+			b, readErr := io.ReadAll(f)
+			if readErr != nil {
+				readErrors.Add(1)
+				if firstReadError == "" {
+					firstReadError = readErr.Error()
+				}
+			}
+
+			closeErr := f.Close()
+			if closeErr != nil {
+				closeErrors.Add(1)
+				if firstCloseError == "" {
+					firstCloseError = closeErr.Error()
+				}
+			}
+
+			if readErr == nil && closeErr == nil {
+				if !bytes.Equal(b, versions[0]) && !bytes.Equal(b, versions[1]) {
+					mismatches.Add(1)
+					if firstMismatch == 0 {
+						firstMismatch = len(b)
+					}
+				}
 			}
 		}
 	}()
+
 	for i := 0; i < 20; i++ {
 		write(versions[i%2])
 	}
+
 	stop.Store(true)
 	wg.Wait()
-	if n := partial.Load(); n > 0 {
-		t.Errorf("a reader saw a partial file %d times", n)
+
+	t.Logf("Open errors: %d", openErrors.Load())
+	t.Logf("Read errors: %d", readErrors.Load())
+	t.Logf("Close errors: %d", closeErrors.Load())
+	t.Logf("Content mismatches: %d", mismatches.Load())
+	t.Logf("First open error: %s", firstOpenError)
+	t.Logf("First read error: %s", firstReadError)
+	t.Logf("First close error: %s", firstCloseError)
+	t.Logf("First mismatched length: %d", firstMismatch)
+
+	if openErrors.Load() > 0 || readErrors.Load() > 0 || closeErrors.Load() > 0 || mismatches.Load() > 0 {
+		t.Errorf("atomic replacement failed")
 	}
 
 	// An abandoned rewrite keeps the old file and leaves nothing behind.

@@ -1792,7 +1792,7 @@ func getLocalXMLTV(file string, xmltv *XMLTV) (err error) {
 
 // parseXMLTVStream : Streaming XML parser for large XMLTV files
 func parseXMLTVStream(file string, xmltv *XMLTV) error {
-	xmlFile, err := os.Open(file)
+	xmlFile, err := openSharedFile(file)
 	if err != nil {
 		return err
 	}

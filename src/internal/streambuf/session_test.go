@@ -433,7 +433,7 @@ func TestStalledSourceIsReplaced(t *testing.T) {
 }
 
 func TestSourceWithoutOutputTimesOut(t *testing.T) {
-	l := newFakeLauncher(map[string]behaviour{"silent": {runFor: time.Nanosecond, hang: true}})
+	l := newFakeLauncher(map[string]behaviour{"silent": {silent: true}})
 	m := NewManager(Logger{})
 	cfg := testConfig()
 	v, err := m.Join(context.Background(), request(l, cfg, src("P", "silent")))

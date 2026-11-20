@@ -319,11 +319,8 @@ func writeFileAtomic(filename string, data []byte, perm os.FileMode) (err error)
 		return err
 	}
 
-	if err = os.Rename(tmp.Name(), filename); err != nil {
-		// The target can't be replaced (e.g. a file bind-mounted into a
-		// container): fall back to writing it in place.
-		os.Remove(tmp.Name())
-		return os.WriteFile(filename, data, perm)
+	if err = replaceFile(tmp.Name(), filename); err != nil {
+		return err
 	}
 
 	return nil
@@ -353,16 +350,15 @@ func (f *atomicFile) Commit() (err error) {
 	if err = f.File.Chmod(0644); err != nil {
 		return err
 	}
+
 	if err = f.File.Close(); err != nil {
 		return err
 	}
-	if err = os.Rename(f.Name(), f.target); err != nil {
-		// The target can't be replaced (e.g. bind-mounted): copy instead.
-		if err = copyFileContents(f.Name(), f.target); err != nil {
-			return err
-		}
-		os.Remove(f.Name())
+
+	if err = replaceFile(f.Name(), f.target); err != nil {
+		return err
 	}
+
 	f.committed = true
 	return nil
 }

@@ -142,6 +142,7 @@ func firstFrame(t *testing.T, b []byte) (frame int, key bool) {
 // behaviour of a fake source.
 type behaviour struct {
 	runFor  time.Duration // stream this long, then end (0 = forever)
+	silent  bool          // remain alive without sending data
 	hang    bool          // after runFor, stop sending but stay alive
 	failNow bool          // exit at once without output
 	exitErr error         // error returned by Wait
@@ -171,6 +172,10 @@ func startFake(b behaviour) *fakeProc {
 		defer close(p.exited)
 		defer pw.Close()
 		if b.failNow {
+			return
+		}
+		if b.silent {
+			<-p.stop
 			return
 		}
 		gen := newTSGen(b.gop)
