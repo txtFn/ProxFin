@@ -208,7 +208,7 @@ func startHLSSession(channelID string) (*hlsSession, error) {
 	cmd := exec.Command(path, args...)
 	setProcessGroup(cmd)
 	cmd.Stdout = nil
-	cmd.Stderr = nil
+	cmd.Stderr = os.Stderr
 
 	if err := cmd.Start(); err != nil {
 		os.RemoveAll(dir)
