@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -18,13 +19,15 @@ const (
 	hlsStartupGrace    = 45 * time.Second
 	hlsIdleTimeout     = 5 * time.Minute
 	hlsMonitorInterval = 5 * time.Second
+	hlsPlaylistWait    = 25 * time.Second
 )
 
 var (
-	hlsMu        sync.Mutex
-	hlsSessions  = make(map[string]*hlsSession)
-	hlsFileRE    = regexp.MustCompile(`^seg[0-9]{6,}\.ts$`)
-	hlsChannelRE = regexp.MustCompile(`^[a-fA-F0-9]{32}$`)
+	hlsMu           sync.Mutex
+	hlsSessions     = make(map[string]*hlsSession)
+	hlsNextSequence = make(map[string]int64)
+	hlsFileRE       = regexp.MustCompile(`^seg[0-9]{6,}\.ts$`)
+	hlsChannelRE    = regexp.MustCompile(`^[a-fA-F0-9]{32}$`)
 )
 
 type hlsSession struct {
@@ -40,6 +43,7 @@ type hlsSession struct {
 	started         time.Time
 	lastPlaylistMod time.Time
 	lastProgress    time.Time
+	startSequence   int64
 }
 
 func HLSHandler(w http.ResponseWriter, r *http.Request) {
@@ -60,46 +64,77 @@ func HLSHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	channelID := parts[0]
-	hlsMu.Lock()
-	s := hlsSessions[channelID]
-	if s == nil {
-		if filename != "index.m3u8" {
-			hlsMu.Unlock()
-			http.NotFound(w, r)
-			return
+	deadline := time.Now().Add(hlsPlaylistWait)
+
+	// During a restart, playlist requests wait briefly for the replacement
+	// instead of immediately returning 503 to a player.
+	for {
+		hlsMu.Lock()
+		s := hlsSessions[channelID]
+		if s == nil {
+			if filename != "index.m3u8" {
+				hlsMu.Unlock()
+				http.NotFound(w, r)
+				return
+			}
+			var err error
+			s, err = startHLSSession(channelID)
+			if err != nil {
+				hlsMu.Unlock()
+				log.Printf("HLS channel %s: start failed: %v", channelID, err)
+				http.Error(w, "Unable to start HLS stream", http.StatusBadGateway)
+				return
+			}
+			hlsSessions[channelID] = s
+			close(s.registered)
+			go monitorHLSSession(channelID, s)
 		}
-		var err error
-		s, err = startHLSSession(channelID)
-		if err != nil {
+		s.mu.Lock()
+		if s.stopping {
+			s.mu.Unlock()
 			hlsMu.Unlock()
-			http.Error(w, "Unable to start HLS stream", http.StatusBadGateway)
-			return
+			if filename != "index.m3u8" {
+				http.NotFound(w, r)
+				return
+			}
+			if !waitForHLSRetry(r, deadline) {
+				http.Error(w, "HLS recovery in progress", http.StatusServiceUnavailable)
+				return
+			}
+			continue
 		}
-		hlsSessions[channelID] = s
-		close(s.registered)
-		go monitorHLSSession(channelID, s)
-	}
-	s.mu.Lock()
-	if s.stopping {
+		s.lastAccess = time.Now()
+		s.activeReaders++
+		s.readers.Add(1)
 		s.mu.Unlock()
 		hlsMu.Unlock()
-		http.Error(w, "HLS session restarting", http.StatusServiceUnavailable)
-		return
-	}
-	s.lastAccess = time.Now()
-	s.activeReaders++
-	s.readers.Add(1)
-	s.mu.Unlock()
-	hlsMu.Unlock()
-	defer func() {
+
+		serveHLSFile(w, r, s, filename, deadline)
 		s.mu.Lock()
 		s.activeReaders--
 		s.mu.Unlock()
 		s.readers.Done()
-	}()
+		return
+	}
+}
+
+func waitForHLSRetry(r *http.Request, deadline time.Time) bool {
+	if time.Now().After(deadline) || r.Context().Err() != nil {
+		return false
+	}
+	timer := time.NewTimer(200 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-r.Context().Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+func serveHLSFile(w http.ResponseWriter, r *http.Request, s *hlsSession, filename string, deadline time.Time) {
 	path := filepath.Join(s.dir, filename)
 	if filename == "index.m3u8" {
-		deadline := time.Now().Add(20 * time.Second)
 		for {
 			if info, err := os.Stat(path); err == nil && info.Size() > 0 {
 				break
@@ -116,7 +151,7 @@ func HLSHandler(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "HLS playlist not ready", http.StatusGatewayTimeout)
 				return
 			}
-			time.Sleep(250 * time.Millisecond)
+			time.Sleep(200 * time.Millisecond)
 		}
 		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
 	} else {
@@ -168,6 +203,14 @@ func startHLSSession(channelID string) (*hlsSession, error) {
 	if headers != "" {
 		args = append(args, "-headers", headers)
 	}
+
+	// Called while hlsMu is locked. Keep segment numbers increasing across
+	// FFmpeg processes so a client never mistakes a new segment for an old one.
+	sequence := hlsNextSequence[channelID]
+	flags := "delete_segments+omit_endlist"
+	if sequence > 0 {
+		flags += "+discont_start"
+	}
 	args = append(args,
 		"-analyzeduration", "1000000",
 		"-probesize", "1000000",
@@ -182,13 +225,13 @@ func startHLSSession(channelID string) (*hlsSession, error) {
 		"-hls_time", "4",
 		"-hls_list_size", "6",
 		"-hls_delete_threshold", "2",
-		"-hls_flags", "delete_segments+omit_endlist",
+		"-start_number", strconv.FormatInt(sequence, 10),
+		"-hls_flags", flags,
 		"-hls_segment_filename", filepath.Join(dir, "seg%06d.ts"),
 		filepath.Join(dir, "index.m3u8"),
 	)
 	cmd := exec.Command(path, args...)
 	setProcessGroup(cmd)
-	cmd.Stdout = nil
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
 		os.RemoveAll(dir)
@@ -199,6 +242,7 @@ func startHLSSession(channelID string) (*hlsSession, error) {
 		dir: dir, cmd: cmd,
 		done: make(chan struct{}), registered: make(chan struct{}),
 		lastAccess: now, started: now, lastProgress: now,
+		startSequence: sequence,
 	}
 	go func() {
 		err := cmd.Wait()
@@ -211,6 +255,12 @@ func startHLSSession(channelID string) (*hlsSession, error) {
 		s.stopping = true
 		s.mu.Unlock()
 		if hlsSessions[channelID] == s {
+			// Read the final playlist before deleting the directory. This
+			// avoids reusing segment numbers when the process is restarted.
+			next := nextHLSSequence(s)
+			if next > hlsNextSequence[channelID] {
+				hlsNextSequence[channelID] = next
+			}
 			delete(hlsSessions, channelID)
 		}
 		hlsMu.Unlock()
@@ -218,7 +268,40 @@ func startHLSSession(channelID string) (*hlsSession, error) {
 		s.readers.Wait()
 		os.RemoveAll(dir)
 	}()
+	log.Printf("HLS channel %s: started FFmpeg at sequence %d", channelID, sequence)
 	return s, nil
+}
+
+func nextHLSSequence(s *hlsSession) int64 {
+	next := s.startSequence + 1
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return next
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if !hlsFileRE.MatchString(name) {
+			continue
+		}
+		number, err := strconv.ParseInt(strings.TrimSuffix(strings.TrimPrefix(name, "seg"), ".ts"), 10, 64)
+		if err == nil && number >= next {
+			next = number + 1
+		}
+	}
+	// FFmpeg deletes old segments; the playlist media sequence is an
+	// additional lower bound for the next start number.
+	data, err := os.ReadFile(filepath.Join(s.dir, "index.m3u8"))
+	if err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			if strings.HasPrefix(line, "#EXT-X-MEDIA-SEQUENCE:") {
+				n, err := strconv.ParseInt(strings.TrimSpace(strings.TrimPrefix(line, "#EXT-X-MEDIA-SEQUENCE:")), 10, 64)
+				if err == nil && n >= next {
+					next = n + 1
+				}
+			}
+		}
+	}
+	return next
 }
 
 func monitorHLSSession(channelID string, s *hlsSession) {
@@ -262,8 +345,6 @@ func monitorHLSSession(channelID string, s *hlsSession) {
 			if stalled {
 				log.Printf("HLS channel %s: playlist stalled for %s; terminating FFmpeg for recovery", channelID, hlsStallTimeout)
 				killProcessGroup(s.cmd)
-				// The next playlist request starts a new session after the old process exits.
-				// A short 503 during this transition is expected.
 				return
 			}
 		}
