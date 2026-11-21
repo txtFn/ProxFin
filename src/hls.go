@@ -193,6 +193,7 @@ func startHLSSession(channelID string) (*hlsSession, error) {
 		args = append(args, "-http_proxy", fmt.Sprintf("http://%s:%s", proxyIP, proxyPort))
 	}
 	args = append(args, ffmpegReconnectArgs(path)...)
+	args = append(args, "-rw_timeout", "10000000")
 	var headers string
 	if referer != "" {
 		headers += "Referer: " + referer + "\r\n"
