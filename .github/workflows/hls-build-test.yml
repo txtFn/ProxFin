@@ -27,3 +27,6 @@ jobs:
       - name: Compile ProxFin
         run: go build -mod=mod ./...
 
+      - name: Run Go tests
+        run: go test -mod=mod -short ./...
+

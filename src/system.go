@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
+	"path"
 	"reflect"
 	"runtime"
 	"strings"
@@ -383,6 +385,15 @@ func createStreamingURL(streamingType, playlistID, channelNumber, channelName, u
 	}
 
 	streamingURL = fmt.Sprintf("%s://%s/stream/%s", serverProtocol, System.Domain, streamInfo.URLid)
+
+        if streamingType == "M3U" &&
+                getProviderParameter(playlistID, "m3u", "buffer") == "hls-direct" {
+                if sourceURL, parseErr := url.Parse(streamInfo.URL); parseErr == nil &&
+                        strings.EqualFold(path.Ext(sourceURL.Path), ".m3u8") {
+                        streamingURL = fmt.Sprintf("%s://%s/hls-direct/%s/index.m3u8",
+                                serverProtocol, System.Domain, streamInfo.URLid)
+                }
+        }
 	return
 }
 
