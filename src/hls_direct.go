@@ -37,6 +37,8 @@ func registerDirectHLSResource(channelID, upstreamURL string) (string, error) {
 		}
 
 		if resource.channelID == channelID && resource.url == upstreamURL {
+			resource.expires = now.Add(10 * time.Minute)
+			directHLSResources.items[id] = resource
 			return id, nil
 		}
 	}
