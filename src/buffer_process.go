@@ -159,28 +159,38 @@ func bufferCommand(program string, src streambuf.Source) (path string, args []st
 		showInfo("Forever Kids: testing FFmpeg without -copyts and with timestamp normalization")
 	}
 
-	// Experiment: normalize timestamps for One Piece only.
-	onePieceURL := "https://jmp2.uk:443/plu-62e94ec74823db0007277a8f.m3u8"
+// One Piece: timestamp normalization and HLS recovery.
+onePieceURL := "https://jmp2.uk:443/plu-62e94ec74823db0007277a8f.m3u8"
 
-	if program == "ffmpeg" && strings.TrimSuffix(src.URL, "?") == onePieceURL {
-		filtered := make([]string, 0, len(args))
+if program == "ffmpeg" && strings.TrimSuffix(src.URL, "?") == onePieceURL {
+    filtered := make([]string, 0, len(args))
+    for _, arg := range args {
+        if arg != "-copyts" {
+            filtered = append(filtered, arg)
+        }
+    }
+    args = filtered
 
-		for _, arg := range args {
-			if arg != "-copyts" {
-				filtered = append(filtered, arg)
-			}
-		}
+    for i, arg := range args {
+        if arg == "-f" && i+1 < len(args) {
+            args = append(args[:i], append([]string{"-avoid_negative_ts", "make_zero"}, args[i:]...)...)
+            break
+        }
+    }
 
-		args = filtered
+    for i, arg := range args {
+        if arg == "-i" {
+            hlsOptions := []string{
+                "-http_persistent", "0",
+                "-http_multiple", "0",
+                "-seg_max_retry", "3",
+            }
+            args = append(args[:i], append(hlsOptions, args[i:]...)...)
+            break
+        }
+    }
 
-		for i, arg := range args {
-			if arg == "-f" && i+1 < len(args) {
-				args = append(args[:i], append([]string{"-avoid_negative_ts", "make_zero"}, args[i:]...)...)
-				break
-			}
-		}
-
-		showInfo("One Piece: testing FFmpeg without -copyts and with timestamp normalization")
+    showInfo("One Piece: timestamp normalization and HLS recovery enabled")
 	}
 	return path, args, nil
 }
