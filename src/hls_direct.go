@@ -63,16 +63,19 @@ func registerDirectHLSResource(channelID, upstreamURL string) (string, error) {
 	return id, nil
 }
 func lookupDirectHLSResource(channelID, id string) (string, bool) {
-	directHLSResources.Lock()
-	defer directHLSResources.Unlock()
+    directHLSResources.Lock()
+    defer directHLSResources.Unlock()
 
-	resource, ok := directHLSResources.items[id]
-	if !ok || resource.channelID != channelID ||
-		time.Now().After(resource.expires) {
-		return "", false
-	}
+    resource, ok := directHLSResources.items[id]
+    if !ok || resource.channelID != channelID ||
+        !time.Now().Before(resource.expires) {
+        return "", false
+    }
 
-	return resource.url, true
+    resource.expires = time.Now().Add(10 * time.Minute)
+    directHLSResources.items[id] = resource
+
+    return resource.url, true
 }
 
 func HLSDirectHandler(w http.ResponseWriter, r *http.Request) {
