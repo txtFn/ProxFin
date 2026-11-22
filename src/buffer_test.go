@@ -470,7 +470,7 @@ func firstVideoFrameType(t *testing.T, data []byte) string {
 	if err != nil {
 		t.Fatalf("ffprobe: %v", err)
 	}
-	return strings.Trim(string(out), ", \n")
+	return strings.Trim(string(out), ", \r\n")
 }
 
 // A viewer joining a running channel starts at once, on a keyframe with

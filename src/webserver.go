@@ -32,6 +32,7 @@ func StartWebserver() (err error) {
 	http.HandleFunc("/", Index)
 	http.HandleFunc("/stream/", Stream)
 	http.HandleFunc("/hls/", HLSHandler)
+	http.HandleFunc("/hls-direct/", HLSDirectHandler)
 	http.HandleFunc("/xmltv/", PlaylistAndGuide)
 	http.HandleFunc("/m3u/", PlaylistAndGuide)
 	http.HandleFunc("/data/", WS)
