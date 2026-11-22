@@ -143,3 +143,39 @@ func TestOldDefaultFFmpegOptionsAreMigrated(t *testing.T) {
 		t.Fatalf("custom options changed: %q", s.FFmpegOptions)
 	}
 }
+
+func TestOnePieceExperimentalTimestampOptions(t *testing.T) {
+	path, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Skip("ffmpeg not installed")
+	}
+
+	oldPath, oldOptions, oldFiles := Settings.FFmpegPath, Settings.FFmpegOptions, Settings.Files.M3U
+	t.Cleanup(func() {
+		Settings.FFmpegPath, Settings.FFmpegOptions, Settings.Files.M3U = oldPath, oldOptions, oldFiles
+	})
+
+	Settings.FFmpegPath = path
+	Settings.FFmpegOptions = defaultFFmpegOptions
+	Settings.Files.M3U = map[string]interface{}{
+		testPlaylistID: map[string]interface{}{"buffer": "ffmpeg"},
+	}
+
+	onePieceURL := "https://jmp2.uk:443/plu-62e94ec74823db0007277a8f.m3u8"
+
+	args := commandFor(t, onePieceURL)
+
+	if indexOf(args, "-copyts") >= 0 {
+		t.Error("One Piece should not use -copyts during the experiment")
+	}
+
+	i := indexOf(args, "-avoid_negative_ts")
+	if i < 0 || i+1 >= len(args) || args[i+1] != "make_zero" {
+		t.Error("One Piece should use -avoid_negative_ts make_zero")
+	}
+
+	otherArgs := commandFor(t, "https://example.com/other-channel.m3u8")
+	if indexOf(otherArgs, "-copyts") < 0 {
+		t.Error("Unrelated channels must retain -copyts")
+	}
+}

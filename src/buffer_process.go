@@ -39,23 +39,23 @@ func bufferLauncher(program string) streambuf.Launcher {
 // bufferCommand builds the command line from the settings, with the user
 // agent, proxy and headers of the source's playlist.
 func bufferCommand(program string, src streambuf.Source) (path string, args []string, err error) {
-        url := src.URL
+	url := src.URL
 
-        if program == "ffmpeg" && isForeverKidsURL(url) {
-    	    resolvedURL, resolveErr := resolveForeverKidsHLS(url)
+	if program == "ffmpeg" && isForeverKidsURL(url) {
+		resolvedURL, resolveErr := resolveForeverKidsHLS(url)
 
-    	    if resolveErr != nil {
-        	showInfo(fmt.Sprintf(
-            	    "Forever Kids: HLS resolution failed (%v); trying original URL",
-            	    resolveErr,
-        	))
-    	    } else {
-        	url = resolvedURL
-        	showInfo("Forever Kids: selected HLS bandwidth 3321280")
-    	    }
+		if resolveErr != nil {
+			showInfo(fmt.Sprintf(
+				"Forever Kids: HLS resolution failed (%v); trying original URL",
+				resolveErr,
+			))
+		} else {
+			url = resolvedURL
+			showInfo("Forever Kids: selected HLS bandwidth 3321280")
+		}
 	}
 
-        t := playlistType(src.PlaylistID)
+	t := playlistType(src.PlaylistID)
 	proxyIP := getProviderParameter(src.PlaylistID, t, "http_proxy.ip")
 	proxyPort := getProviderParameter(src.PlaylistID, t, "http_proxy.port")
 	referer := getProviderParameter(src.PlaylistID, t, "http_headers.referer")
@@ -159,6 +159,29 @@ func bufferCommand(program string, src streambuf.Source) (path string, args []st
 		showInfo("Forever Kids: testing FFmpeg without -copyts and with timestamp normalization")
 	}
 
+	// Experiment: normalize timestamps for One Piece only.
+	onePieceURL := "https://jmp2.uk:443/plu-62e94ec74823db0007277a8f.m3u8"
+
+	if program == "ffmpeg" && strings.TrimSuffix(src.URL, "?") == onePieceURL {
+		filtered := make([]string, 0, len(args))
+
+		for _, arg := range args {
+			if arg != "-copyts" {
+				filtered = append(filtered, arg)
+			}
+		}
+
+		args = filtered
+
+		for i, arg := range args {
+			if arg == "-f" && i+1 < len(args) {
+				args = append(args[:i], append([]string{"-avoid_negative_ts", "make_zero"}, args[i:]...)...)
+				break
+			}
+		}
+
+		showInfo("One Piece: testing FFmpeg without -copyts and with timestamp normalization")
+	}
 	return path, args, nil
 }
 
