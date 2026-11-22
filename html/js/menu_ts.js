@@ -1149,8 +1149,8 @@ function openPopUp(dataType, element) {
             var input = content.createInput("text", dbKey, data[dbKey]);
             input.setAttribute("placeholder", "{{.playlist.fileM3U.placeholder}}");
             content.appendRow("{{.playlist.fileM3U.title}}", input);
-            var text = ["-", "FFmpeg", "VLC"];
-            var values = ["-", "ffmpeg", "vlc"];
+            var text = ["-", "FFmpeg", "VLC", "Direct HLS"];
+            var values = ["-", "ffmpeg", "vlc", "hls-direct"];
             var selected = SERVER["settings"]["buffer"];
             if (data["buffer"] != undefined) {
                 selected = data["buffer"];

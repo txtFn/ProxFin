@@ -217,7 +217,7 @@ func Stream(w http.ResponseWriter, r *http.Request) {
 	showInfo(fmt.Sprintf("Client User-Agent:%s", r.Header.Get("User-Agent")))
 
 	switch playListBuffer {
-	case "-":
+	case "-", "hls-direct":
 		showInfo("Streaming URL:" + streamInfo.URL)
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		http.Redirect(w, r, streamInfo.URL, 302)
