@@ -126,17 +126,42 @@ func serveDirectHLSUpstreamWithClient(
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	w.WriteHeader(http.StatusOK)
+	if resp.ContentLength > directHLSRecoveryMaxMediaSize {
+		// Preserve streaming for large resources without buffering
+		// their entire contents in Railway memory.
+		w.WriteHeader(http.StatusOK)
 
-	if flusher, ok := w.(http.Flusher); ok {
-		flusher.Flush()
-	}
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
 
-	if err := copyDirectHLSMediaWithLength(w, resp.Body, resp.ContentLength); err != nil {
-		// The response may already be committed.
-		// Abort the connection rather than completing a partial segment.
-		controller := http.NewResponseController(w)
-		_ = controller.SetWriteDeadline(time.Now().Add(-time.Second))
+		if err := copyDirectHLSMediaWithLength(
+			w,
+			resp.Body,
+			resp.ContentLength,
+		); err != nil {
+			controller := http.NewResponseController(w)
+			_ = controller.SetWriteDeadline(time.Now().Add(-time.Second))
+		}
 		return
 	}
+	data, recoveredType, err := fetchDirectHLSMediaFromResponse(
+		r.Context(),
+		client,
+		upstreamURL,
+		resp,
+	)
+	if err != nil {
+		w.Header().Del("Content-Length")
+		http.Error(w, "Unable to recover upstream media", http.StatusBadGateway)
+		return
+	}
+
+	if recoveredType != "" {
+		w.Header().Set("Content-Type", recoveredType)
+	}
+
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
 }

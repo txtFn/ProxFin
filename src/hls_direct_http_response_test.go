@@ -1,7 +1,6 @@
 package src
 
 import (
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -64,7 +63,6 @@ func TestDirectHLSInterruptedHTTPResponse(t *testing.T) {
 		func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "video/mp2t")
 			w.Header().Set("Content-Length", "10")
-
 			_, _ = io.WriteString(w, "12345")
 		},
 	))
@@ -89,37 +87,22 @@ func TestDirectHLSInterruptedHTTPResponse(t *testing.T) {
 	}
 	defer response.Body.Close()
 
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("expected HTTP 200, got %d", response.StatusCode)
-	}
-
-	if response.ContentLength != 10 {
+	if response.StatusCode != http.StatusBadGateway {
 		t.Fatalf(
-			"expected Content-Length 10, got %d",
-			response.ContentLength,
+			"expected HTTP 502, got %d",
+			response.StatusCode,
 		)
 	}
 
 	content, err := io.ReadAll(response.Body)
-
-	if !errors.Is(err, io.ErrUnexpectedEOF) {
-		t.Fatalf(
-			"expected incomplete transfer error, got %v (received %d bytes)",
-			err,
-			len(content),
-		)
+	if err != nil {
+		t.Fatalf("unable to read error response: %v", err)
 	}
 
-	t.Logf("HTTP status: %d", response.StatusCode)
-	t.Logf("Content-Length: %d", response.ContentLength)
-	t.Logf("Received bytes: %d", len(content))
-	t.Logf("Read error: %v", err)
-	t.Logf("Partial content: %q", content)
-
-	if len(content) >= 10 {
-		t.Fatalf(
-			"expected incomplete media, received %d bytes",
-			len(content),
-		)
+	if strings.Contains(string(content), "12345") {
+		t.Fatal("partial upstream media leaked to client")
 	}
+
+	t.Logf("Correctly returned HTTP %d", response.StatusCode)
+	t.Logf("Response: %s", strings.TrimSpace(string(content)))
 }
