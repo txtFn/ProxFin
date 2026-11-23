@@ -7,9 +7,12 @@ on:
     branches:
       - feature/render-config-persistence
     paths:
+      - "Dockerfile"
       - "scripts/github_config_sync.py"
       - "tests/test_github_config_sync.py"
       - ".github/workflows/check-python.yml"
+      - "docker-entrypoint.sh"
+      - "scripts/github_backup_worker.sh"
 
 jobs:
   syntax-check:
@@ -33,3 +36,9 @@ jobs:
       - name: Run configuration backup tests
         run: |
           python -m unittest discover -s tests -p "test_github_config_sync.py" -v
+
+      - name: Check shell script syntax
+        run: |
+          sh -n docker-entrypoint.sh
+          sh -n scripts/github_backup_worker.sh
+          echo "PASS: Shell syntax is valid"

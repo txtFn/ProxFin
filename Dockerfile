@@ -67,6 +67,7 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
+    python3 \
     ffmpeg \
     vlc \
     tzdata \
@@ -92,8 +93,19 @@ RUN apt-get update && \
 
 # Copy built binary from builder image
 COPY --from=builder /app/proxfin $PROXFIN_BIN/
+
+# Install GitHub configuration synchronization scripts
+COPY scripts/github_config_sync.py /usr/local/bin/github_config_sync.py
+COPY scripts/github_backup_worker.sh /usr/local/bin/github_backup_worker.sh
+
+# Install ProxFin startup script
 COPY docker-entrypoint.sh /usr/local/bin/proxfin-entrypoint
-RUN chmod +rx $PROXFIN_BIN/proxfin /usr/local/bin/proxfin-entrypoint
+
+RUN chmod +rx \
+    $PROXFIN_BIN/proxfin \
+    /usr/local/bin/proxfin-entrypoint \
+    /usr/local/bin/github_config_sync.py \
+    /usr/local/bin/github_backup_worker.sh
 
 EXPOSE $PROXFIN_PORT
 

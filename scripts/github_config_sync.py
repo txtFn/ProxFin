@@ -8,7 +8,6 @@ import json
 import os
 import sys
 import tempfile
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -23,12 +22,12 @@ FILES = (
 )
 
 BACKUP_FILE = "proxfin-config.json"
+AUTHORIZATION_FILE = "initialize-backup.json"
 
 
 def request_github(method, path, payload=None):
     token = os.environ["GITHUB_BACKUP_TOKEN"]
     repo = os.environ["GITHUB_BACKUP_REPO"]
-    branch = os.environ.get("GITHUB_BACKUP_BRANCH", "main")
 
     if len(repo.split("/")) != 2:
         raise ValueError("Invalid GitHub repository setting")
@@ -63,9 +62,32 @@ def request_github(method, path, payload=None):
         ) from None
 
 
-def fetch_backup():
-    repo = os.environ["GITHUB_BACKUP_REPO"]
+def encoded_branch():
+    branch = os.environ.get("GITHUB_BACKUP_BRANCH", "main")
+    return urllib.parse.quote(branch, safe="")
 
+
+def initialization_authorized():
+    """Check explicit authorization in the private GitHub repository."""
+    result = request_github(
+        "GET",
+        f"contents/{AUTHORIZATION_FILE}?ref={encoded_branch()}",
+    )
+
+    if result is None:
+        return False
+
+    document = json.loads(
+        base64.b64decode(result["content"]).decode("utf-8")
+    )
+
+    return (
+        isinstance(document, dict)
+        and document.get("initialize") is True
+    )
+
+
+def fetch_backup():
     # Confirm that the private repository is accessible.
     repository = request_github("GET", "")
 
@@ -75,12 +97,10 @@ def fetch_backup():
         )
 
     branch = os.environ.get("GITHUB_BACKUP_BRANCH", "main")
-    encoded_branch = urllib.parse.quote(branch, safe="")
 
-    # Confirm that the configured backup branch exists.
     branch_result = request_github(
         "GET",
-        f"branches/{encoded_branch}",
+        f"branches/{encoded_branch()}",
     )
 
     if branch_result is None:
@@ -90,7 +110,7 @@ def fetch_backup():
 
     result = request_github(
         "GET",
-        f"contents/{BACKUP_FILE}?ref={encoded_branch}",
+        f"contents/{BACKUP_FILE}?ref={encoded_branch()}",
     )
 
     if result is None:
@@ -122,7 +142,6 @@ def validate_files(files):
             raise ValueError(f"Invalid JSON object: {name}")
 
 
-
 def read_local(config_dir):
     files = {}
 
@@ -138,8 +157,7 @@ def read_local(config_dir):
 
     validate_files(files)
 
-    # ProxFin creates empty JSON objects during initial startup.
-    # Do not treat five empty files as a configured installation.
+    # Reject completely empty default configurations.
     if all(json.loads(content) == {} for content in files.values()):
         raise ValueError(
             "Configuration is not initialized; "
@@ -158,13 +176,19 @@ def backup(config_dir, initialize=False):
     files = read_local(config_dir)
     existing, sha = fetch_backup()
 
-    if initialize and existing is not None:
-        raise RuntimeError(
-            "A GitHub backup already exists. "
-            "Initialization cannot overwrite it."
-        )
+    if initialize:
+        if existing is not None:
+            raise RuntimeError(
+                "A GitHub backup already exists. "
+                "Initialization cannot overwrite it."
+            )
 
-    if existing is None and not initialize:
+        if not initialization_authorized():
+            raise RuntimeError(
+                "First backup is not authorized in GitHub."
+            )
+
+    elif existing is None:
         raise RuntimeError(
             "No remote backup exists. "
             "Explicit initialization is required."
@@ -229,7 +253,6 @@ def restore(config_dir):
 
     config_dir.mkdir(parents=True, exist_ok=True)
 
-    # Stage and validate all files before replacing anything.
     staged = {}
 
     try:
@@ -258,16 +281,24 @@ def restore(config_dir):
 
 def main():
     parser = argparse.ArgumentParser()
+
     parser.add_argument(
         "action",
-        choices=["validate", "backup", "restore"],
+        choices=[
+            "validate",
+            "backup",
+            "restore",
+            "authorization-status",
+        ],
     )
+
     parser.add_argument(
         "--config-dir",
         default=os.environ.get(
             "PROXFIN_CONF", "/home/proxfin/conf"
         ),
     )
+
     parser.add_argument(
         "--initialize",
         action="store_true",
@@ -279,6 +310,14 @@ def main():
 
     if args.initialize and args.action != "backup":
         parser.error("--initialize is only valid with backup")
+
+    if args.action == "authorization-status":
+        if initialization_authorized():
+            print("First-backup authorization is enabled.")
+            return
+
+        print("First-backup authorization is not enabled.")
+        sys.exit(11)
 
     if args.action == "validate":
         validate(config_dir)
