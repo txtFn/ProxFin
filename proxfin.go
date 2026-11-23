@@ -161,6 +161,7 @@ func main() {
 	}
 
 	if bindIpAddress != nil && len(*bindIpAddress) > 0 {
+		system.Flag.BindIpAddress = *bindIpAddress
 		system.IPAddress = *bindIpAddress
 	}
 

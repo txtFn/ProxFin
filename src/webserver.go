@@ -24,7 +24,10 @@ func StartWebserver() (err error) {
 	systemMutex.Lock()
 	port := Settings.Port
 	ipAddress := System.IPAddress
-	if Settings.BindIpAddress != "" {
+
+	if System.Flag.BindIpAddress != "" {
+		ipAddress = System.Flag.BindIpAddress
+	} else if Settings.BindIpAddress != "" {
 		ipAddress = Settings.BindIpAddress
 	}
 	systemMutex.Unlock()

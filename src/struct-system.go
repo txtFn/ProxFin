@@ -50,12 +50,13 @@ type SystemStruct struct {
 	}
 
 	Flag struct {
-		Branch  string
-		Debug   int
-		Info    bool
-		Port    string
-		Restore string
-		SSDP    bool
+		Branch        string
+		Debug         int
+		Info          bool
+		Port          string
+		Restore       string
+		SSDP          bool
+		BindIpAddress string
 	}
 
 	Folder struct {
@@ -333,7 +334,7 @@ type SettingsStruct struct {
 	ThreadfinAutoUpdate       bool                  `json:"ThreadfinAutoUpdate"`
 	StoreBufferInRAM          bool                  `json:"storeBufferInRAM"`
 	ForceHttps                bool                  `json:"forceHttps"`
-    ExcludeStreamHttps        bool                  `json:"excludeStreamHttps"`
+	ExcludeStreamHttps        bool                  `json:"excludeStreamHttps"`
 	HttpsPort                 int                   `json:"httpsPort"`
 	BindIpAddress             string                `json:"bindIpAddress"`
 	HttpsThreadfinDomain      string                `json:"httpsThreadfinDomain"`
