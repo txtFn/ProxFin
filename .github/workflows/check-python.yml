@@ -1,0 +1,28 @@
+name: Check ProxFin Python Syntax
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/render-config-persistence
+    paths:
+      - "scripts/github_config_sync.py"
+      - ".github/workflows/check-python.yml"
+
+jobs:
+  syntax-check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check Python syntax
+        run: |
+          python -m py_compile scripts/github_config_sync.py
+          echo "PASS: Python syntax is valid"
