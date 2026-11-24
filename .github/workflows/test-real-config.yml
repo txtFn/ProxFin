@@ -1,0 +1,114 @@
+name: Test ProxFin Real Configuration
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - encrypted-persistence
+    paths:
+      - '.github/workflows/test-real-config.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  inspect-real-config:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build ProxFin Docker image
+        run: |
+          docker build -t proxfin-config-test .
+
+      - name: Prepare isolated configuration
+        run: |
+          mkdir -p "$RUNNER_TEMP/proxfin-config"
+
+      - name: Start isolated ProxFin
+        run: |
+          docker run -d \
+            --name proxfin-config-test \
+            -v "$RUNNER_TEMP/proxfin-config:/home/proxfin/conf" \
+            --entrypoint /home/proxfin/bin/proxfin \
+            proxfin-config-test \
+            -port=34400 \
+            -bind=0.0.0.0 \
+            -config=/home/proxfin/conf
+
+      - name: Wait for ProxFin startup
+        run: |
+          for i in $(seq 1 30); do
+            if docker exec proxfin-config-test \
+              curl -fsS http://127.0.0.1:34400/web/ \
+              > /dev/null 2>&1; then
+              echo "ProxFin startup successful"
+              exit 0
+            fi
+            sleep 2
+          done
+
+          docker logs proxfin-config-test
+          exit 1
+
+      - name: Stop ProxFin safely
+        run: |
+          docker stop -t 30 proxfin-config-test
+
+      - name: Inspect configuration files
+        run: |
+          sudo python3 - <<'PY'
+          import os
+          import json
+          from pathlib import Path
+
+          root = Path(os.environ["RUNNER_TEMP"]) / "proxfin-config"
+
+          print("=== ACTUAL CONFIGURATION FILES ===")
+
+          files = sorted(p for p in root.rglob("*") if p.is_file())
+
+          if not files:
+              raise SystemExit("ERROR: No configuration files generated")
+
+          for path in files:
+              print(f"{path.relative_to(root)} | {path.stat().st_size} bytes")
+
+          print("\n=== JSON CONFIGURATION STRUCTURE ===")
+
+          for path in files:
+              if path.suffix.lower() != ".json":
+                  continue
+
+              print(f"\nFILE: {path.relative_to(root)}")
+
+              try:
+                  data = json.loads(path.read_text())
+
+                  print("JSON validation: PASS")
+                  print("Root type:", type(data).__name__)
+
+                  if isinstance(data, dict):
+                      print("Top-level keys:")
+
+                      for key, value in sorted(data.items()):
+                          print(f"  {key}: {type(value).__name__}")
+
+                  elif isinstance(data, list):
+                      print("Array length:", len(data))
+
+              except Exception as exc:
+                  print("JSON validation: FAIL")
+                  print(type(exc).__name__)
+                  raise
+
+          print("\nREAL CONFIGURATION INSPECTION PASSED")
+          PY
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker rm -f proxfin-config-test || true
