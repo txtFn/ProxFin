@@ -1,0 +1,132 @@
+name: Test ProxFin Encrypted Persistence
+
+on:
+  push:
+    branches:
+      - encrypted-persistence
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-persistence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build ProxFin Docker image
+        run: |
+          docker build \
+            -t proxfin-persistence-test:local .
+
+      - name: Verify installed dependencies
+        run: |
+          docker run --rm \
+            --entrypoint /bin/sh \
+            proxfin-persistence-test:local \
+            -c '
+              set -e
+              python3 --version
+              python3 -c "from cryptography.hazmat.primitives.ciphers.aead import AESGCM"
+              echo "Encryption dependency verified"
+            '
+
+      - name: Verify installed backup scripts
+        run: |
+          docker run --rm \
+            --entrypoint /bin/sh \
+            proxfin-persistence-test:local \
+            -c '
+              set -e
+
+              test -f /opt/proxfin-backup/github_config_sync.py
+              test -f /opt/proxfin-backup/backup-worker.sh
+              test -x /usr/local/bin/proxfin-entrypoint
+
+              python3 -m py_compile /opt/proxfin-backup/github_config_sync.py
+
+              sh -n /opt/proxfin-backup/backup-worker.sh
+              sh -n /usr/local/bin/proxfin-entrypoint
+
+              echo "All persistence scripts verified"
+            '
+
+      - name: Test AES-GCM encryption
+        run: |
+          docker run --rm -i \
+            --entrypoint python3 \
+            proxfin-persistence-test:local - <<'PY'
+          import os
+          from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+          from cryptography.exceptions import InvalidTag
+
+          key = AESGCM.generate_key(bit_length=256)
+          cipher = AESGCM(key)
+          nonce = os.urandom(12)
+          original = b"ProxFin test configuration"
+
+          encrypted = cipher.encrypt(nonce, original, None)
+          restored = cipher.decrypt(nonce, encrypted, None)
+
+          assert restored == original
+          assert original not in encrypted
+
+          print("Encryption test passed")
+          print("Decryption test passed")
+
+          wrong_key = AESGCM.generate_key(bit_length=256)
+
+          try:
+              AESGCM(wrong_key).decrypt(nonce, encrypted, None)
+          except InvalidTag:
+              print("Incorrect key rejected successfully")
+          else:
+              raise AssertionError("Incorrect key was accepted")
+
+          tampered = bytearray(encrypted)
+          tampered[-1] ^= 1
+
+          try:
+              cipher.decrypt(nonce, bytes(tampered), None)
+          except InvalidTag:
+              print("Tampered backup rejected successfully")
+          else:
+              raise AssertionError("Tampered backup was accepted")
+
+          print("All cryptography tests passed")
+          PY
+
+      - name: Verify startup rejects missing credentials
+        run: |
+          set +e
+
+          output=$(docker run --rm \
+            proxfin-persistence-test:local 2>&1)
+
+          status=$?
+
+          set -e
+
+          echo "$output"
+
+          if [ "$status" -eq 0 ]; then
+            echo "ERROR: Startup should have failed"
+            exit 1
+          fi
+
+          echo "$output" | grep -F "Missing GitHub backup token"
+
+          echo "Startup protection verified"
+
+      - name: Test summary
+        run: |
+          echo "Docker build successful"
+          echo "Python dependencies verified"
+          echo "Backup scripts verified"
+          echo "AES-GCM encryption verified"
+          echo "Startup credential protection verified"
+          echo "No production backup data modified"
