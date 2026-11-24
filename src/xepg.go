@@ -1938,17 +1938,20 @@ func (m *uuidMatcher) find(fileID, uuid string) (XEPGChannelStruct, bool) {
 }
 
 // M3U Datei erstellen
-func createM3UFile() {
+func createM3UFile() error {
+    showInfo("XEPG:" + fmt.Sprintf("Create M3U file (%s)", System.File.M3U))
 
-	showInfo("XEPG:" + fmt.Sprintf("Create M3U file (%s)", System.File.M3U))
-	err := saveM3UFile(nil)
-	if err != nil {
-		ShowError(err, 000)
-	}
+    if err := saveM3UFile(nil); err != nil {
+        ShowError(err, 000)
+        return fmt.Errorf("M3U generation failed: %w", err)
+    }
 
-	saveStreamingURLs()
+    if err := saveStreamingURLs(); err != nil {
+        ShowError(err, 000)
+        return fmt.Errorf("streaming URL persistence failed: %w", err)
+    }
 
-	return
+    return nil
 }
 
 // XEPG Datenbank bereinigen
