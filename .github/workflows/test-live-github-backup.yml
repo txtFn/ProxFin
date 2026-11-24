@@ -1,0 +1,233 @@
+name: Test ProxFin Live GitHub Backup
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - encrypted-persistence
+    paths:
+      - '.github/workflows/test-live-github-backup.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: proxfin-live-backup-test
+  cancel-in-progress: false
+
+jobs:
+  test-live-backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      GITHUB_BACKUP_REPO: txtFn/proxfin-backup-test
+      GITHUB_BACKUP_BRANCH: main
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install cryptography
+
+      - name: Generate isolated configuration
+        run: |
+          python - <<'PY'
+          import os
+          import json
+          from pathlib import Path
+
+          root = Path(os.environ["RUNNER_TEMP"])
+          config = root / "proxfin-live-original"
+          config.mkdir(parents=True, exist_ok=True)
+
+          files = {
+              "authentication.json": {
+                  "users": {}
+              },
+              "pms.json": {},
+              "settings.json": {
+                  "uuid": "proxfin-live-test-001",
+                  "files": {
+                      "m3u": {
+                          "test-provider": {
+                              "name": "Synthetic Test",
+                              "url": "https://example.invalid/test.m3u"
+                          }
+                      }
+                  },
+                  "filter": {},
+                  "tuner": 1
+              },
+              "xepg.json": {},
+              "urls.json": {}
+          }
+
+          for name, data in files.items():
+              (config / name).write_text(
+                  json.dumps(data),
+                  encoding="utf-8"
+              )
+
+          print("PASS: Synthetic configuration generated")
+          PY
+
+      - name: Test live GitHub backup and restoration
+        env:
+          GITHUB_BACKUP_TOKEN: ${{ secrets.PROXFIN_TEST_BACKUP_TOKEN }}
+          BACKUP_ENCRYPTION_KEY: ${{ secrets.PROXFIN_TEST_ENCRYPTION_KEY }}
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+          import json
+          from pathlib import Path
+
+          sys.path.insert(0, "scripts")
+          import github_config_sync as sync
+
+          root = Path(os.environ["RUNNER_TEMP"])
+          original = root / "proxfin-live-original"
+          restored = root / "proxfin-live-restored"
+
+          print("=== VERIFY GITHUB CONNECTIVITY ===")
+
+          sync.verify_repository()
+          print("PASS: Private repository accessible")
+          print("PASS: Backup branch accessible")
+
+          sync.encryption_key()
+          print("PASS: Encryption key valid")
+
+          print("=== VALIDATE CONFIGURATION ===")
+
+          sync.validate(original)
+          print("PASS: Configuration validation")
+
+          print("=== INITIALIZE ENCRYPTED BACKUP ===")
+
+          existing, _ = sync.fetch_backup()
+
+          if existing is not None:
+              raise RuntimeError(
+                  "Test backup already exists. "
+                  "Use a fresh test repository."
+              )
+
+          if not sync.initialization_authorized():
+              raise RuntimeError(
+                  "Initialization authorization missing"
+              )
+
+          print("PASS: Initialization authorized")
+
+          sync.backup(original, initialize=True)
+
+          print("PASS: First encrypted backup uploaded")
+
+          print("=== VERIFY REMOTE ENCRYPTION ===")
+
+          remote = sync.get_remote_file(sync.BACKUP_FILE)
+          raw = sync.decode_remote_file(remote)
+          envelope = json.loads(raw)
+
+          assert envelope["algorithm"] == "AES-256-GCM"
+          assert b"proxfin-live-test-001" not in raw
+          assert b"example.invalid" not in raw
+
+          print("PASS: Encrypted envelope verified")
+          print("PASS: Fixture plaintext not exposed")
+
+          print("=== RESTORE FROM GITHUB ===")
+
+          sync.restore(restored)
+
+          for name in sync.FILES:
+              assert (
+                  (original / name).read_bytes()
+                  == (restored / name).read_bytes()
+              )
+              print(f"PASS: Exact restoration of {name}")
+
+          settings = json.loads(
+              (restored / "settings.json").read_text()
+          )
+
+          assert settings["uuid"] == "proxfin-live-test-001"
+
+          print("PASS: Server UUID preserved")
+
+          print("=== TEST DUPLICATE PREVENTION ===")
+
+          before = sync.get_remote_file(
+              sync.BACKUP_FILE
+          )["sha"]
+
+          sync.backup(original)
+
+          after = sync.get_remote_file(
+              sync.BACKUP_FILE
+          )["sha"]
+
+          assert before == after
+
+          print("PASS: Duplicate upload skipped")
+
+          print("=== TEST CONFIGURATION UPDATE ===")
+
+          settings_path = original / "settings.json"
+          settings = json.loads(settings_path.read_text())
+          settings["tuner"] = 2
+          settings_path.write_text(json.dumps(settings))
+
+          sync.backup(original)
+
+          updated = sync.get_remote_file(
+              sync.BACKUP_FILE
+          )["sha"]
+
+          assert updated != after
+
+          print("PASS: Updated backup uploaded")
+
+          print("=== RESTORE UPDATED CONFIGURATION ===")
+
+          updated_restore = root / "proxfin-live-updated"
+
+          sync.restore(updated_restore)
+
+          for name in sync.FILES:
+              assert (
+                  (original / name).read_bytes()
+                  == (updated_restore / name).read_bytes()
+              )
+
+          settings = json.loads(
+              (updated_restore / "settings.json").read_text()
+          )
+
+          assert settings["tuner"] == 2
+          assert settings["uuid"] == "proxfin-live-test-001"
+
+          print("PASS: Updated configuration restored")
+          print("PASS: UUID preserved after update")
+
+          print("ALL LIVE GITHUB BACKUP TESTS PASSED")
+          PY
+
+      - name: Cleanup local test configuration
+        if: always()
+        run: |
+          rm -rf \
+            "$RUNNER_TEMP/proxfin-live-original" \
+            "$RUNNER_TEMP/proxfin-live-restored" \
+            "$RUNNER_TEMP/proxfin-live-updated"
