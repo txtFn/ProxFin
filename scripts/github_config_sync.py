@@ -3,7 +3,10 @@
 
 import argparse
 import base64
+import hashlib
+import hmac
 import json
+from datetime import datetime, timezone
 import os
 import sys
 import tempfile
@@ -25,6 +28,7 @@ FILES = (
 
 BACKUP_FILE = "proxfin-config.json.enc"
 AUTHORIZATION_FILE = "initialize-backup.json"
+REMOVAL_AUTHORIZATION_FILE = "authorize-mapping-removal.json"
 LEGACY_BACKUP_FILE = "proxfin-config.json"
 
 VERSION = 1
@@ -217,6 +221,81 @@ def initialization_authorized():
         and document.get("initialize") is True
     )
 
+def mapping_removal_authorized(
+    backup_sha, uuid, removed_ids, files
+):
+    result = get_remote_file(
+        REMOVAL_AUTHORIZATION_FILE
+    )
+
+    if result is None:
+        return False
+
+    document = json.loads(
+        decode_remote_file(result)
+    )
+
+    if not isinstance(document, dict):
+        return False
+
+    if document.get("authorize") is not True:
+        return False
+
+    if document.get("backup_sha") != backup_sha:
+        return False
+
+    if document.get("uuid") != uuid:
+        return False
+
+    authorized_ids = document.get(
+        "removed_mapping_ids"
+    )
+
+    if not isinstance(authorized_ids, list):
+        return False
+
+    if not all(
+        isinstance(item, str)
+        for item in authorized_ids
+    ):
+        return False
+
+    if sorted(authorized_ids) != sorted(removed_ids):
+        return False
+
+    expected_digest = hashlib.sha256(
+        encode_json(files)
+    ).hexdigest()
+
+    supplied_digest = document.get(
+        "configuration_sha256"
+    )
+
+    if not isinstance(supplied_digest, str):
+        return False
+
+    if not hmac.compare_digest(
+        supplied_digest, expected_digest
+    ):
+        return False
+
+    try:
+        expires = datetime.fromisoformat(
+            document["expires_at"].replace(
+                "Z", "+00:00"
+            )
+        )
+
+        if expires.tzinfo is None:
+            return False
+
+        if expires <= datetime.now(timezone.utc):
+            return False
+
+    except (KeyError, ValueError, TypeError, AttributeError):
+        return False
+
+    return True
 
 def fetch_backup():
     verify_repository()
