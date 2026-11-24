@@ -295,7 +295,8 @@ func updateXEPG(background bool) {
 }
 
 // Mapping Menü für die XMLTV Dateien erstellen
-func createXEPGMapping() {
+func createXEPGMapping() error {
+    var mappingErrors error
 	Data.XMLTV.Files = getLocalProviderFiles("xmltv")
 	Data.XMLTV.Mapping = make(map[string]interface{})
 
@@ -337,8 +338,15 @@ func createXEPGMapping() {
 				// Remove the file (this used to append the files after it
 				// again instead)
 				Data.XMLTV.Files = append(Data.XMLTV.Files[:i], Data.XMLTV.Files[i+1:]...)
-				var errMsg = err.Error()
-				err = errors.New(getProviderParameter(fileID, "xmltv", "name") + ": " + errMsg)
+				err = fmt.Errorf(
+    				"XMLTV provider %s (%s): %w",
+    				fileID,
+    				getProviderParameter(fileID, "xmltv", "name"),
+    				err,
+				)
+
+				mappingErrors = errors.Join(mappingErrors, err)
+
 				ShowError(err, 000)
 			}
 
@@ -400,7 +408,7 @@ func createXEPGMapping() {
 
 	Data.XMLTV.Mapping[dummyXMLTVFile] = dummy
 
-	return
+	return mappingErrors
 }
 
 // XEPG Datenbank erstellen / aktualisieren
