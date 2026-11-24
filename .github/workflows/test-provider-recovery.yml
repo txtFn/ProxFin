@@ -1,0 +1,53 @@
+
+name: Test ProxFin Provider Recovery
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - encrypted-persistence
+    paths:
+      - 'src/provider.go'
+      - 'src/provider_recovery_test.go'
+      - 'src/provider_race_test.go'
+      - '.github/workflows/test-provider-recovery.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test-provider-recovery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download Go dependencies
+        run: go mod download
+
+      - name: Verify compilation
+        run: go build ./...
+
+      - name: Test provider error aggregation
+        run: |
+          go test ./src \
+            -run '^TestProviderErrorAggregation$' \
+            -v \
+            -count=1 \
+            -timeout=5m
+
+      - name: Test existing provider race protection
+        run: |
+          go test -race ./src \
+            -run '^TestProviderSettingsReadDuringRefresh$' \
+            -v \
+            -count=1 \
+            -timeout=5m
