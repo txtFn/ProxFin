@@ -1,0 +1,66 @@
+name: Test Provider Recovery Status
+
+on:
+  push:
+    branches:
+      - encrypted-persistence
+    paths:
+      - 'src/provider_recovery.go'
+      - 'src/provider_recovery_status_test.go'
+      - 'src/provider_recovery_test.go'
+      - 'src/provider.go'
+      - '.github/workflows/test-provider-recovery-status.yml'
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Provider Recovery Status Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      GOFLAGS: "-mod=readonly"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Verify Go compilation
+        run: go build ./...
+
+      - name: Run recovery status regression tests
+        run: |
+          go test ./src \
+            -run '^TestProviderRecovery' \
+            -v \
+            -count=1 \
+            -timeout=5m
+
+      - name: Verify existing provider error aggregation
+        run: |
+          go test ./src \
+            -run '^TestProviderErrorAggregation$' \
+            -v \
+            -count=1 \
+            -timeout=5m
+
+      - name: Run recovery status race detector
+        run: |
+          go test -race ./src \
+            -run '^TestProviderRecovery' \
+            -v \
+            -count=1 \
+            -timeout=5m
