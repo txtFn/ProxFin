@@ -1799,75 +1799,75 @@ func getLocalXMLTV(file string, xmltv *XMLTV) (err error) {
 
 // parseXMLTVStream : Streaming XML parser for large XMLTV files
 func parseXMLTVStream(file string, xmltv *XMLTV) error {
-	xmlFile, err := openSharedFile(file)
-	if err != nil {
-		return err
-	}
-	defer xmlFile.Close()
+xmlFile, err := openSharedFile(file)
+if err != nil {
+return err
+}
+defer xmlFile.Close()
 
-	decoder := xml.NewDecoder(xmlFile)
+decoder := xml.NewDecoder(xmlFile)
 
-	xmltv.Channel = make([]*Channel, 0)
-	xmltv.Program = make([]*Program, 0)
+xmltv.Channel = make([]*Channel, 0)
+xmltv.Program = make([]*Program, 0)
 
-	var currentElement string
-	var channelCount, programCount int
+var currentElement string
+var channelCount, programCount int
 
-	for {
-		token, err := decoder.Token()
-		if err != nil {
-			if err.Error() == "EOF" {
-				break
-			}
-			return err
-		}
+for {
+token, err := decoder.Token()
+if err != nil {
+if errors.Is(err, io.EOF) {
+break
+}
+return fmt.Errorf("XMLTV token parsing failed: %w", err)
+}
 
-		switch se := token.(type) {
-		case xml.StartElement:
-			currentElement = se.Name.Local
+switch se := token.(type) {
+case xml.StartElement:
+currentElement = se.Name.Local
 
-			switch currentElement {
-			case "tv":
-				for _, attr := range se.Attr {
-					switch attr.Name.Local {
-					case "generator-info-name":
-						xmltv.Generator = attr.Value
-					case "source-info-name":
-						xmltv.Source = attr.Value
-					}
-				}
+switch currentElement {
+case "tv":
+for _, attr := range se.Attr {
+switch attr.Name.Local {
+case "generator-info-name":
+xmltv.Generator = attr.Value
+case "source-info-name":
+xmltv.Source = attr.Value
+}
+}
 
-			case "channel":
-				var channel Channel
-				if err := decoder.DecodeElement(&channel, &se); err != nil {
-					showDebug("XMLTV Stream:Error parsing channel: "+err.Error(), 2)
-					continue
-				}
-				xmltv.Channel = append(xmltv.Channel, &channel)
-				channelCount++
+case "channel":
+var channel Channel
+if err := decoder.DecodeElement(&channel, &se); err != nil {
+return fmt.Errorf("XMLTV channel decoding failed: %w", err)
+}
 
-				if channelCount%1000 == 0 {
-					showInfo(fmt.Sprintf("XMLTV Stream:Parsed %d channels", channelCount))
-				}
+xmltv.Channel = append(xmltv.Channel, &channel)
+channelCount++
 
-			case "programme":
-				var program Program
-				if err := decoder.DecodeElement(&program, &se); err != nil {
-					showDebug("XMLTV Stream:Error parsing program: "+err.Error(), 3)
-					continue
-				}
-				xmltv.Program = append(xmltv.Program, &program)
-				programCount++
+if channelCount%1000 == 0 {
+showInfo(fmt.Sprintf("XMLTV Stream:Parsed %d channels", channelCount))
+}
 
-				if programCount%10000 == 0 {
-					showInfo(fmt.Sprintf("XMLTV Stream:Parsed %d programs", programCount))
-				}
-			}
-		}
-	}
+case "programme":
+var program Program
+if err := decoder.DecodeElement(&program, &se); err != nil {
+return fmt.Errorf("XMLTV programme decoding failed: %w", err)
+}
 
-	showInfo(fmt.Sprintf("XMLTV Stream:Completed - %d channels, %d programs", channelCount, programCount))
-	return nil
+xmltv.Program = append(xmltv.Program, &program)
+programCount++
+
+if programCount%10000 == 0 {
+showInfo(fmt.Sprintf("XMLTV Stream:Parsed %d programs", programCount))
+}
+}
+}
+}
+
+showInfo(fmt.Sprintf("XMLTV Stream:Completed - %d channels, %d programs", channelCount, programCount))
+return nil
 }
 
 // uuidMatcher finds the database channel of a stream by its playlist and
