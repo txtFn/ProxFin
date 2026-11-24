@@ -2,6 +2,7 @@ package src
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -16,7 +17,9 @@ import (
 // fileType: Welcher Dateityp soll aktualisiert werden (m3u, hdhr, xml) | fileID: Update einer bestimmten Datei (Provider ID)
 func getProviderData(fileType, fileID string) (err error) {
 
-	var fileExtension, serverFileName string
+    var providerErrors error
+
+    var fileExtension, serverFileName string
 	var body = make([]byte, 0)
 	var newProvider = false
 	var dataMap = make(map[string]interface{})
@@ -254,8 +257,18 @@ func getProviderData(fileType, fileID string) (err error) {
 
 		if err != nil {
 
-			ShowError(err, 000)
-			var downloadErr = err
+    		ShowError(err, 000)
+    		var downloadErr = err
+
+    		providerErrors = errors.Join(
+        		providerErrors,
+        		fmt.Errorf(
+            		"provider %s (%s) failed: %w",
+            		dataID,
+            		fileType,
+            		downloadErr,
+        		),
+    		)
 
 			if newProvider == false {
 
@@ -287,7 +300,7 @@ func getProviderData(fileType, fileID string) (err error) {
 				}
 
 			} else {
-				return downloadErr
+				return providerErrors
 			}
 
 		}
@@ -334,7 +347,7 @@ func getProviderData(fileType, fileID string) (err error) {
 	Done:
 	}
 
-	return
+	return providerErrors
 }
 
 // Timeouts for playlist and EPG downloads. They detect a server that does
