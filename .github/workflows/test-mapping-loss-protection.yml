@@ -1,0 +1,170 @@
+
+name: Test Mapping Loss Protection
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-mapping-protection:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install cryptography
+
+      - name: Test mapping loss protection
+        run: |
+          python <<'PY'
+          import sys
+          import os
+          import json
+          import base64
+          import tempfile
+          from pathlib import Path
+          from unittest.mock import patch
+
+          sys.path.insert(0, "scripts")
+          import github_config_sync as sync
+
+          os.environ["BACKUP_ENCRYPTION_KEY"] = (
+              base64.b64encode(os.urandom(32)).decode()
+          )
+
+          def make_files(mapping_ids):
+              files = {
+                  name: "{}" for name in sync.FILES
+              }
+
+              files["settings.json"] = json.dumps({
+                  "uuid": "mapping-protection-test",
+                  "files": {
+                      "m3u": {
+                          "M-test": {
+                              "name": "Test Provider"
+                          }
+                      }
+                  }
+              })
+
+              files["xepg.json"] = json.dumps({
+                  key: {"x-active": True}
+                  for key in mapping_ids
+              })
+
+              return files
+
+          def run_test(name, old_ids, new_ids, blocked):
+              previous = make_files(old_ids)
+              current = make_files(new_ids)
+
+              remote = {
+                  "version": sync.VERSION,
+                  "files": previous
+              }
+
+              with tempfile.TemporaryDirectory() as tmp:
+                  config = Path(tmp)
+
+                  for filename, content in current.items():
+                      (config / filename).write_text(
+                          content, encoding="utf-8"
+                      )
+
+                  with patch.object(
+                      sync,
+                      "fetch_backup",
+                      return_value=(remote, "test-sha")
+                  ) as fetch, patch.object(
+                      sync,
+                      "request_github"
+                  ) as request:
+
+                      try:
+                          if not blocked and previous != current:
+                              fetch.side_effect = [
+                                  (remote, "test-sha"),
+                                  ({
+                                      "version": sync.VERSION,
+                                      "files": current
+                                  }, "new-sha")
+                              ]
+
+                          sync.backup(config)
+
+                      except RuntimeError as exc:
+                          if not blocked:
+                              raise
+
+                          assert "Channel mapping loss detected" in str(exc)
+                          request.assert_not_called()
+                          print(f"PASS: {name} - blocked")
+                          return
+
+                      if blocked:
+                          raise AssertionError(
+                              f"{name}: unexpected backup permission"
+                          )
+
+                      if previous == current:
+                          request.assert_not_called()
+                      else:
+                          request.assert_called_once()
+
+                      print(f"PASS: {name} - allowed")
+
+          run_test(
+              "Unchanged mappings",
+              ["A", "B", "C"],
+              ["A", "B", "C"],
+              False
+          )
+
+          run_test(
+              "Additional mappings",
+              ["A", "B", "C"],
+              ["A", "B", "C", "D"],
+              False
+          )
+
+          run_test(
+              "Partial mapping loss",
+              ["A", "B", "C"],
+              ["A", "B"],
+              True
+          )
+
+          run_test(
+              "Complete mapping loss",
+              ["A", "B", "C"],
+              [],
+              True
+          )
+
+          run_test(
+              "Same count but replaced mapping",
+              ["A", "B", "C"],
+              ["A", "B", "D"],
+              True
+          )
+
+          run_test(
+              "First mappings added",
+              [],
+              ["A", "B"],
+              False
+          )
+
+          print("ALL MAPPING PROTECTION TESTS PASSED")
+          PY
