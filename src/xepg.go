@@ -1774,15 +1774,14 @@ func getLocalXMLTV(file string, xmltv *XMLTV) (err error) {
 			showInfo("XEPG:" + "Using streaming parser for large XMLTV file: " + file)
 			err = parseXMLTVStream(file, xmltv)
 		} else {
-			// Use original method for smaller files
-			content, err := readByteFromFile(file)
-			if err != nil {
-				err = errors.New("Local copy of the file no longer exists")
-				return err
-			}
+    		// Use original method for smaller files
+    		content, readErr := readByteFromFile(file)
+    		if readErr != nil {
+        		return fmt.Errorf("failed to read local XMLTV file: %w", readErr)
+    		}
 
-			// XML Datei parsen
-			err = xml.Unmarshal(content, &xmltv)
+    		// Propagate XML parsing errors
+    		err = xml.Unmarshal(content, xmltv)
 		}
 
 		if err != nil {
