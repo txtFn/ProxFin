@@ -67,6 +67,8 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
+    python3 \
+    python3-cryptography \
     ffmpeg \
     vlc \
     tzdata \
@@ -92,8 +94,30 @@ RUN apt-get update && \
 
 # Copy built binary from builder image
 COPY --from=builder /app/proxfin $PROXFIN_BIN/
+
+# Install encrypted configuration persistence scripts
+RUN mkdir -p /opt/proxfin-backup
+
+COPY scripts/github_config_sync.py /opt/proxfin-backup/github_config_sync.py
+COPY scripts/backup-worker.sh /opt/proxfin-backup/backup-worker.sh
+
+# Install container entrypoint
 COPY docker-entrypoint.sh /usr/local/bin/proxfin-entrypoint
-RUN chmod +rx $PROXFIN_BIN/proxfin /usr/local/bin/proxfin-entrypoint
+
+# Set executable permissions
+RUN chmod +rx \
+    $PROXFIN_BIN/proxfin \
+    /usr/local/bin/proxfin-entrypoint \
+    /opt/proxfin-backup/github_config_sync.py \
+    /opt/proxfin-backup/backup-worker.sh
+
+# Verify Python encryption dependencies
+RUN python3 -c "from cryptography.hazmat.primitives.ciphers.aead import AESGCM; print('AES-GCM dependency verified')"
+
+# Verify script syntax
+RUN python3 -m py_compile /opt/proxfin-backup/github_config_sync.py && \
+    sh -n /opt/proxfin-backup/backup-worker.sh && \
+    sh -n /usr/local/bin/proxfin-entrypoint
 
 EXPOSE $PROXFIN_PORT
 
