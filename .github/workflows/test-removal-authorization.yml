@@ -1,0 +1,189 @@
+
+name: Test Mapping Removal Authorization
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - encrypted-persistence
+    paths:
+      - 'scripts/github_config_sync.py'
+      - '.github/workflows/test-removal-authorization.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test-authorization:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install cryptography
+
+      - name: Test removal authorization
+        run: |
+          python <<'PY'
+          import sys
+          import json
+          import base64
+          import hashlib
+          from datetime import datetime, timezone, timedelta
+          from unittest.mock import patch
+
+          sys.path.insert(0, "scripts")
+          import github_config_sync as sync
+
+          files = {
+              name: "{}" for name in sync.FILES
+          }
+
+          files["settings.json"] = json.dumps({
+              "uuid": "authorization-test",
+              "files": {
+                  "m3u": {
+                      "M-test": {
+                          "name": "Test Provider"
+                      }
+                  }
+              }
+          })
+
+          files["xepg.json"] = json.dumps({
+              "A": {"x-active": True}
+          })
+
+          backup_sha = "test-backup-sha"
+          uuid = "authorization-test"
+          removed_ids = {"B", "C"}
+
+          digest = hashlib.sha256(
+              sync.encode_json(files)
+          ).hexdigest()
+
+          valid = {
+              "authorize": True,
+              "backup_sha": backup_sha,
+              "uuid": uuid,
+              "removed_mapping_ids": ["B", "C"],
+              "configuration_sha256": digest,
+              "expires_at": (
+                  datetime.now(timezone.utc)
+                  + timedelta(minutes=30)
+              ).isoformat()
+          }
+
+          def run_test(name, document, expected,
+                       sha=backup_sha):
+              remote = None
+
+              if document is not None:
+                  remote = {
+                      "encoding": "base64",
+                      "content": base64.b64encode(
+                          json.dumps(document).encode()
+                      ).decode()
+                  }
+
+              with patch.object(
+                  sync,
+                  "get_remote_file",
+                  return_value=remote
+              ):
+                  result = sync.mapping_removal_authorized(
+                      sha,
+                      uuid,
+                      removed_ids,
+                      files
+                  )
+
+              assert result == expected, (
+                  f"{name}: expected {expected}, got {result}"
+              )
+
+              print(f"PASS: {name}")
+
+          run_test(
+              "Valid authorization",
+              valid,
+              True
+          )
+
+          run_test(
+              "Missing authorization",
+              None,
+              False
+          )
+
+          run_test(
+              "Authorization disabled",
+              dict(valid, authorize=False),
+              False
+          )
+
+          run_test(
+              "Incorrect backup SHA",
+              dict(valid, backup_sha="incorrect"),
+              False
+          )
+
+          run_test(
+              "Incorrect UUID",
+              dict(valid, uuid="incorrect"),
+              False
+          )
+
+          run_test(
+              "Missing mapping ID",
+              dict(valid, removed_mapping_ids=["B"]),
+              False
+          )
+
+          run_test(
+              "Additional mapping ID",
+              dict(valid, removed_mapping_ids=["B", "C", "D"]),
+              False
+          )
+
+          run_test(
+              "Incorrect configuration digest",
+              dict(valid, configuration_sha256="incorrect"),
+              False
+          )
+
+          run_test(
+              "Expired authorization",
+              dict(valid, expires_at="2020-01-01T00:00:00Z"),
+              False
+          )
+
+          run_test(
+              "Invalid expiration format",
+              dict(valid, expires_at="invalid"),
+              False
+          )
+
+          run_test(
+              "Missing timezone",
+              dict(valid, expires_at="2099-01-01T00:00:00"),
+              False
+          )
+
+          run_test(
+              "Authorization reused after backup update",
+              valid,
+              False,
+              sha="updated-backup-sha"
+          )
+
+          print("ALL AUTHORIZATION TESTS PASSED")
+          PY
