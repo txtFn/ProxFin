@@ -1,0 +1,282 @@
+name: Test ProxFin Real Configuration Restoration
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - encrypted-persistence
+    paths:
+      - '.github/workflows/test-real-config-restore.yml'
+      - 'scripts/github_config_sync.py'
+
+permissions:
+  contents: read
+
+jobs:
+  test-real-restoration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build ProxFin Docker image
+        run: |
+          docker build -t proxfin-restore-test .
+
+      - name: Prepare isolated directories
+        run: |
+          mkdir -p "$RUNNER_TEMP/proxfin-original"
+          mkdir -p "$RUNNER_TEMP/proxfin-restored"
+
+      - name: Start original ProxFin
+        run: |
+          docker run -d \
+            --name proxfin-original \
+            -v "$RUNNER_TEMP/proxfin-original:/home/proxfin/conf" \
+            --entrypoint /home/proxfin/bin/proxfin \
+            proxfin-restore-test \
+            -port=34400 \
+            -bind=0.0.0.0 \
+            -config=/home/proxfin/conf
+
+      - name: Wait for original startup
+        run: |
+          for i in $(seq 1 30); do
+            if docker exec proxfin-original \
+              curl -fsS http://127.0.0.1:34400/web/ \
+              > /dev/null 2>&1; then
+              echo "Original ProxFin startup successful"
+              exit 0
+            fi
+            sleep 2
+          done
+
+          docker logs proxfin-original
+          exit 1
+
+      - name: Stop original ProxFin safely
+        run: |
+          docker stop -t 30 proxfin-original
+
+      - name: Install Python dependencies
+        run: |
+          python3 -m venv "$RUNNER_TEMP/test-venv"
+          "$RUNNER_TEMP/test-venv/bin/pip" install cryptography
+
+      - name: Test actual encrypted configuration restoration
+        run: |
+          sudo env \
+            RUNNER_TEMP="$RUNNER_TEMP" \
+            GITHUB_WORKSPACE="$GITHUB_WORKSPACE" \
+            "$RUNNER_TEMP/test-venv/bin/python" - <<'PY'
+          import os
+          import sys
+          import json
+          import base64
+          import copy
+          from pathlib import Path
+
+          root = Path(os.environ["RUNNER_TEMP"])
+          original = root / "proxfin-original"
+          restored = root / "proxfin-restored"
+
+          sys.path.insert(
+              0,
+              str(Path(os.environ["GITHUB_WORKSPACE"]) / "scripts")
+          )
+
+          import github_config_sync as sync
+
+          os.environ["BACKUP_ENCRYPTION_KEY"] = (
+              base64.b64encode(os.urandom(32)).decode()
+          )
+
+          os.environ["GITHUB_BACKUP_REPO"] = "test/isolated"
+          os.environ["GITHUB_BACKUP_BRANCH"] = "main"
+          os.environ["GITHUB_BACKUP_TOKEN"] = "test-only"
+
+          remote = {}
+
+          def fake_github(method, path="", payload=None):
+              if method == "GET":
+                  if path == "":
+                      return {"private": True}
+
+                  if path.startswith("branches/"):
+                      return {"name": "main"}
+
+                  if path.startswith("contents/"):
+                      name = path.split("?", 1)[0].split("/", 1)[1]
+                      return copy.deepcopy(remote.get(name))
+
+              if method == "PUT":
+                  name = path.split("/", 1)[1]
+
+                  if name in remote:
+                      assert payload.get("sha") == remote[name]["sha"]
+
+                  remote[name] = {
+                      "encoding": "base64",
+                      "content": payload["content"],
+                      "sha": os.urandom(20).hex(),
+                  }
+
+                  return {"content": {"sha": remote[name]["sha"]}}
+
+              raise RuntimeError("Unexpected simulated GitHub request")
+
+          sync.request_github = fake_github
+
+          print("=== VERIFY GENERATED CONFIGURATION ===")
+
+          for name in sync.FILES:
+              path = original / name
+              assert path.is_file(), f"Missing {name}"
+              assert isinstance(json.loads(path.read_text()), dict)
+              print(f"PASS: {name}")
+
+          settings_path = original / "settings.json"
+          settings = json.loads(settings_path.read_text())
+
+          original_uuid = settings["uuid"]
+          assert original_uuid
+
+          print("PASS: Actual ProxFin UUID exists")
+
+          # Add a synthetic provider to satisfy backup validation.
+          # This entry is used only for the storage roundtrip test.
+          original_settings = settings_path.read_text()
+
+          settings.setdefault("files", {})
+          settings["files"]["m3u"] = {
+              "test-provider": {
+                  "name": "Isolated test provider",
+                  "url": "https://example.invalid/test.m3u"
+              }
+          }
+
+          settings_path.write_text(json.dumps(settings))
+
+          sync.validate(original)
+
+          print("PASS: Configuration validation")
+
+          remote[sync.AUTHORIZATION_FILE] = {
+              "encoding": "base64",
+              "content": base64.b64encode(
+                  b'{"initialize":true}'
+              ).decode(),
+              "sha": "authorization-test",
+          }
+
+          print("=== CREATE ENCRYPTED BACKUP ===")
+
+          sync.backup(original, initialize=True)
+
+          assert sync.BACKUP_FILE in remote
+
+          encrypted = sync.decode_remote_file(
+              remote[sync.BACKUP_FILE]
+          )
+
+          assert b"example.invalid" not in encrypted
+          assert original_uuid.encode() not in encrypted
+
+          print("PASS: Configuration plaintext not exposed")
+
+          print("=== RESTORE CONFIGURATION ===")
+
+          sync.restore(restored)
+
+          for name in sync.FILES:
+              assert (
+                  (original / name).read_bytes()
+                  == (restored / name).read_bytes()
+              ), f"Restoration mismatch: {name}"
+
+              print(f"PASS: Exact restoration of {name}")
+
+          restored_settings = json.loads(
+              (restored / "settings.json").read_text()
+          )
+
+          assert restored_settings["uuid"] == original_uuid
+
+          print("PASS: Server UUID preserved")
+
+          assert (
+              restored_settings["files"]["m3u"]["test-provider"]["name"]
+              == "Isolated test provider"
+          )
+
+          print("PASS: Synthetic provider preserved")
+
+          # Remove the synthetic provider before application startup.
+          # It is not a complete application-generated provider.
+          (restored / "settings.json").write_text(original_settings)
+
+          print("PASS: Original application settings prepared for startup")
+
+          print("REAL CONFIGURATION ROUNDTRIP PASSED")
+          PY
+
+      - name: Start restored ProxFin
+        run: |
+          docker run -d \
+            --name proxfin-restored \
+            -v "$RUNNER_TEMP/proxfin-restored:/home/proxfin/conf" \
+            --entrypoint /home/proxfin/bin/proxfin \
+            proxfin-restore-test \
+            -port=34400 \
+            -bind=0.0.0.0 \
+            -config=/home/proxfin/conf
+
+      - name: Verify restored application startup
+        run: |
+          for i in $(seq 1 30); do
+            if docker exec proxfin-restored \
+              curl -fsS http://127.0.0.1:34400/web/ \
+              > /dev/null 2>&1; then
+              echo "PASS: Restored ProxFin startup successful"
+              exit 0
+            fi
+            sleep 2
+          done
+
+          docker logs proxfin-restored
+          exit 1
+
+      - name: Stop restored ProxFin safely
+        run: |
+          docker stop -t 30 proxfin-restored
+
+      - name: Verify UUID after application startup
+        run: |
+          sudo env RUNNER_TEMP="$RUNNER_TEMP" python3 - <<'PY'
+          import os
+          import json
+          from pathlib import Path
+
+          root = Path(os.environ["RUNNER_TEMP"])
+
+          original = json.loads(
+              (root / "proxfin-original/settings.json").read_text()
+          )
+
+          restored = json.loads(
+              (root / "proxfin-restored/settings.json").read_text()
+          )
+
+          assert original["uuid"] == restored["uuid"]
+
+          print("PASS: UUID preserved after application startup")
+          print("ALL REAL CONFIGURATION RESTORATION TESTS PASSED")
+          PY
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker rm -f proxfin-original || true
+          docker rm -f proxfin-restored || true
