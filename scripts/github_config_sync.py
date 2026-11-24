@@ -357,6 +357,20 @@ def backup(config_dir, initialize=False):
                 "ProxFin UUID changed; refusing to overwrite backup"
             )
 
+        previous_mappings = previous["xepg.json"]
+        current_mappings = current["xepg.json"]
+
+        removed_mappings = (
+            set(previous_mappings) - set(current_mappings)
+        )
+
+        if removed_mappings:
+            raise RuntimeError(
+                "Channel mapping loss detected: "
+                f"{len(removed_mappings)} existing mappings missing; "
+                "refusing to overwrite remote backup"
+            )
+
         if existing["files"] == files:
             print("Configuration unchanged")
             return
