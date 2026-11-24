@@ -1,0 +1,56 @@
+
+name: Test XMLTV Stream Recovery
+
+on:
+  push:
+    branches:
+      - encrypted-persistence
+    paths:
+      - 'src/xepg.go'
+      - 'src/xmltv_stream_recovery_test.go'
+      - '.github/workflows/test-xmltv-stream-recovery.yml'
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      GOFLAGS: "-mod=readonly"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Verify Go compilation
+        run: go build ./...
+
+      - name: Test XMLTV streaming parser recovery
+        run: |
+          go test ./src \
+            -run '^TestXMLTVStream(Recovery|MissingFile)$' \
+            -v \
+            -count=1 \
+            -timeout=5m
+
+      - name: Test XMLTV recovery with race detector
+        run: |
+          go test -race ./src \
+            -run '^TestXMLTVStream(Recovery|MissingFile)$' \
+            -v \
+            -count=1 \
+            -timeout=5m
