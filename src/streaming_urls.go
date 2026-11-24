@@ -58,18 +58,20 @@ func resetStreamingURLs() {
 // saveStreamingURLs writes the cache to urls.json. The file is written
 // from a copy: holding the lock during the write made every tune wait for
 // the disk whenever a rebuild was waiting to store an entry.
-func saveStreamingURLs() {
-	streamingURLsSaveMu.Lock()
-	defer streamingURLsSaveMu.Unlock()
 
-	streamingURLsMu.RLock()
-	urls := maps.Clone(Data.Cache.StreamingURLS)
-	streamingURLsMu.RUnlock()
+func saveStreamingURLs() error {
+    streamingURLsSaveMu.Lock()
+    defer streamingURLsSaveMu.Unlock()
 
-	if urls == nil {
-		return // not used since the start: urls.json is up to date
-	}
-	saveMapToJSONFile(System.File.URLS, urls)
+    streamingURLsMu.RLock()
+    urls := maps.Clone(Data.Cache.StreamingURLS)
+    streamingURLsMu.RUnlock()
+
+    if urls == nil {
+        return nil
+    }
+
+    return saveMapToJSONFile(System.File.URLS, urls)
 }
 
 // storeStreamingURL returns the entry for id in the current generation,
