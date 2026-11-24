@@ -1,0 +1,58 @@
+name: Test Streaming URL Persistence
+
+on:
+  push:
+    branches:
+      - encrypted-persistence
+    paths:
+      - 'src/streaming_urls.go'
+      - 'src/streaming_urls_test.go'
+      - 'src/streaming_urls_persistence_test.go'
+      - 'src/toolchain.go'
+      - 'src/file_replace_*.go'
+      - '.github/workflows/test-streaming-url-persistence.yml'
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      GOFLAGS: "-mod=readonly"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Verify Go compilation
+        run: go build ./...
+
+      - name: Test streaming URL persistence
+        run: |
+          go test ./src \
+            -run '^TestStreamingURLPersistenceErrors$' \
+            -v \
+            -count=1 \
+            -timeout=5m
+
+      - name: Test streaming URL regressions with race detector
+        run: |
+          go test -race ./src \
+            -run '^TestStreamingURL' \
+            -v \
+            -count=1 \
+            -timeout=5m
