@@ -1,0 +1,69 @@
+name: Test M3U Persistence
+
+on:
+  push:
+    branches:
+      - encrypted-persistence
+    paths:
+      - 'src/m3u.go'
+      - 'src/xepg.go'
+      - 'src/m3u_persistence_test.go'
+      - 'src/xepg_m3u_test.go'
+      - 'src/streaming_urls.go'
+      - 'src/streaming_urls_persistence_test.go'
+      - 'src/toolchain.go'
+      - 'src/file_replace_*.go'
+      - '.github/workflows/test-m3u-persistence.yml'
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      GOFLAGS: "-mod=readonly"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Verify Go compilation
+        run: go build ./...
+
+      - name: Test M3U persistence
+        run: |
+          go test ./src \
+            -run '^TestM3UPersistenceErrors$' \
+            -v \
+            -count=1 \
+            -timeout=5m
+
+      - name: Test existing M3U regressions
+        run: |
+          go test ./src \
+            -run '^Test(BuildM3U|M3UWithQueryParameters)' \
+            -v \
+            -count=1 \
+            -timeout=5m
+
+      - name: Test persistence with race detector
+        run: |
+          go test -race ./src \
+            -run '^Test(M3UPersistenceErrors|StreamingURLPersistenceErrors)$' \
+            -v \
+            -count=1 \
+            -timeout=5m
