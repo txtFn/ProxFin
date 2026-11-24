@@ -1,0 +1,60 @@
+name: Test XMLTV Generation Recovery
+
+on:
+  push:
+    branches:
+      - encrypted-persistence
+    paths:
+      - 'src/xepg.go'
+      - 'src/xepg_generation_recovery_test.go'
+      - 'src/xepg_pipeline_test.go'
+      - 'src/xmltv_stream_recovery_test.go'
+      - 'src/compression.go'
+      - '.github/workflows/test-xmltv-generation-recovery.yml'
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      GOFLAGS: "-mod=readonly"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Verify Go compilation
+        run: go build ./...
+
+      - name: Test XMLTV generation recovery
+        run: |
+          go test ./src \
+            -run '^TestXMLTVGenerationRecovery' \
+            -v -count=1 -timeout=5m
+
+      - name: Test existing XMLTV functionality
+        run: |
+          go test ./src \
+            -run '^(TestXMLTVGzipIsComplete|TestGetProgramDataMatchesLegacy|TestCountXMLTVMatchesUnmarshal|TestXMLTVStreamRecovery|TestXMLTVStreamMissingFile|TestDummyProgramLengths)$' \
+            -v -count=1 -timeout=5m
+
+      - name: Test XMLTV generation with race detector
+        run: |
+          go test -race ./src \
+            -run '^TestXMLTVGenerationRecovery' \
+            -v -count=1 -timeout=5m
