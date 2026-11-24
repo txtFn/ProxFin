@@ -1,0 +1,260 @@
+name: Test ProxFin Configuration Roundtrip
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - encrypted-persistence
+    paths:
+      - 'scripts/github_config_sync.py'
+      - '.github/workflows/test-config-roundtrip.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test-roundtrip:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: python -m pip install cryptography
+
+      - name: Test configuration persistence
+        shell: bash
+        run: |
+          python <<'PY'
+          import sys
+          import os
+          import json
+          import base64
+          import tempfile
+          from pathlib import Path
+          from unittest.mock import patch
+
+          sys.path.insert(0, "scripts")
+          import github_config_sync as sync
+
+          key = base64.b64encode(
+              os.urandom(32)
+          ).decode()
+
+          os.environ["BACKUP_ENCRYPTION_KEY"] = key
+          os.environ["GITHUB_BACKUP_REPO"] = "test/mock"
+          os.environ["GITHUB_BACKUP_BRANCH"] = "main"
+          os.environ["GITHUB_BACKUP_TOKEN"] = "mock-token"
+
+          remote = {}
+          writes = []
+
+          def github(method, path="", payload=None):
+              if method == "GET":
+                  if path == "":
+                      return {"private": True}
+
+                  if path == "branches/main":
+                      return {"name": "main"}
+
+                  name = path.split("?")[0].split("/")[-1]
+                  return remote.get(name)
+
+              if method == "PUT":
+                  name = path.split("/")[-1]
+
+                  remote[name] = {
+                      "encoding": "base64",
+                      "content": payload["content"],
+                      "sha": str(len(writes) + 1),
+                  }
+
+                  writes.append(name)
+                  return {"content": remote[name]}
+
+              raise AssertionError("Unexpected API request")
+
+          def expect_failure(action, message):
+              try:
+                  action()
+              except Exception:
+                  print("PASS:", message)
+              else:
+                  raise AssertionError(message)
+
+          fixture = {
+              "authentication.json": {
+                  "password": "disposable-test-secret"
+              },
+              "pms.json": {},
+              "settings.json": {
+                  "uuid": "proxfin-test-uuid",
+                  "files": {
+                      "m3u": {
+                          "provider1": {
+                              "url": "https://example.com/test.m3u"
+                          }
+                      }
+                  },
+                  "filter": {
+                      "test-filter": {"name": "Test"}
+                  }
+              },
+              "xepg.json": {
+                  "channel1": {"name": "Test Channel"}
+              },
+              "urls.json": {}
+          }
+
+          with tempfile.TemporaryDirectory() as tmp:
+              source = Path(tmp) / "source"
+              target = Path(tmp) / "restored"
+              source.mkdir()
+
+              for name, content in fixture.items():
+                  (source / name).write_text(
+                      json.dumps(content),
+                      encoding="utf-8"
+                  )
+
+              with patch.object(
+                  sync, "request_github", side_effect=github
+              ):
+                  sync.validate(source)
+                  print("PASS: Configuration validation")
+
+                  expect_failure(
+                      lambda: sync.backup(source),
+                      "Backup requires initialization"
+                  )
+
+                  expect_failure(
+                      lambda: sync.backup(
+                          source, initialize=True
+                      ),
+                      "Unauthorized initialization rejected"
+                  )
+
+                  assert not writes
+
+                  remote[sync.AUTHORIZATION_FILE] = {
+                      "encoding": "base64",
+                      "content": base64.b64encode(
+                          b'{"initialize":true}'
+                      ).decode(),
+                      "sha": "authorization"
+                  }
+
+                  sync.backup(source, initialize=True)
+                  assert len(writes) == 1
+                  print("PASS: Authorized initialization")
+
+                  encrypted = base64.b64decode(
+                      remote[sync.BACKUP_FILE]["content"]
+                  )
+
+                  assert b"disposable-test-secret" not in encrypted
+                  assert b"proxfin-test-uuid" not in encrypted
+                  print("PASS: No fixture plaintext exposed")
+
+                  sync.restore(target)
+
+                  for name in sync.FILES:
+                      assert (
+                          (source / name).read_bytes()
+                          == (target / name).read_bytes()
+                      )
+
+                  print("PASS: All five files restored")
+                  print("PASS: UUID and fixture data preserved")
+
+                  sync.backup(source)
+                  assert len(writes) == 1
+                  print("PASS: Duplicate upload skipped")
+
+                  expect_failure(
+                      lambda: sync.backup(
+                          source, initialize=True
+                      ),
+                      "Repeated initialization rejected"
+                  )
+
+                  os.environ["BACKUP_ENCRYPTION_KEY"] = (
+                      base64.b64encode(
+                          os.urandom(32)
+                      ).decode()
+                  )
+
+                  expect_failure(
+                      lambda: sync.restore(target),
+                      "Incorrect encryption key rejected"
+                  )
+
+                  os.environ["BACKUP_ENCRYPTION_KEY"] = key
+
+                  envelope = json.loads(encrypted)
+                  ciphertext = bytearray(
+                      base64.b64decode(envelope["ciphertext"])
+                  )
+                  ciphertext[-1] ^= 1
+
+                  envelope["ciphertext"] = base64.b64encode(
+                      ciphertext
+                  ).decode()
+
+                  expect_failure(
+                      lambda: sync.decrypt_snapshot(
+                          json.dumps(envelope).encode()
+                      ),
+                      "Tampered ciphertext rejected"
+                  )
+
+                  fixture["settings.json"]["uuid"] = "changed-uuid"
+
+                  (source / "settings.json").write_text(
+                      json.dumps(fixture["settings.json"]),
+                      encoding="utf-8"
+                  )
+
+                  expect_failure(
+                      lambda: sync.backup(source),
+                      "Changed UUID rejected"
+                  )
+
+                  assert len(writes) == 1
+
+                  fixture["settings.json"]["uuid"] = (
+                      "proxfin-test-uuid"
+                  )
+
+                  fixture["xepg.json"]["channel2"] = {
+                      "name": "Updated Test Channel"
+                  }
+
+                  for name in ("settings.json", "xepg.json"):
+                      (source / name).write_text(
+                          json.dumps(fixture[name]),
+                          encoding="utf-8"
+                      )
+
+                  sync.backup(source)
+                  assert len(writes) == 2
+                  sync.restore(target)
+
+                  for name in sync.FILES:
+                      assert (
+                          (source / name).read_bytes()
+                          == (target / name).read_bytes()
+                      )
+
+                  print("PASS: Updated configuration restored")
+
+          print("ALL CONFIGURATION ROUNDTRIP TESTS PASSED")
+          PY
