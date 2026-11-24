@@ -3,6 +3,12 @@ name: Test Mapping Loss Protection
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - encrypted-persistence
+    paths:
+      - 'scripts/github_config_sync.py'
+      - '.github/workflows/test-mapping-loss-protection.yml'
 
 permissions:
   contents: read
