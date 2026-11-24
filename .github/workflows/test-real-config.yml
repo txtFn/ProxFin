@@ -60,7 +60,7 @@ jobs:
 
       - name: Inspect configuration files
         run: |
-          sudo python3 - <<'PY'
+          sudo env RUNNER_TEMP="$RUNNER_TEMP" python3 - <<'PY'
           import os
           import json
           from pathlib import Path
