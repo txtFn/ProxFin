@@ -20,6 +20,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
+    env:
+      GOFLAGS: "-mod=readonly"
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
