@@ -1,0 +1,264 @@
+
+name: Test XEPG Recovery on Linux
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - xepg-recovery-linux-test
+
+permissions:
+  contents: read
+
+concurrency:
+  group: xepg-recovery-linux-test
+  cancel-in-progress: false
+
+jobs:
+  recovery-tests:
+    name: Linux Recovery and Race Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      GOFLAGS: "-mod=readonly"
+      CGO_ENABLED: "1"
+
+    steps:
+      - name: Checkout isolated testing branch
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Verify testing branch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "$GITHUB_REF" != \
+            "refs/heads/xepg-recovery-linux-test" ]]; then
+            echo "Unexpected branch"
+            exit 1
+          fi
+
+          echo "Branch: $GITHUB_REF"
+          echo "Commit: $GITHUB_SHA"
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Inspect Linux environment
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          go version
+          go env GOOS GOARCH CGO_ENABLED CC
+          gcc --version
+          uname -a
+          free -m
+
+      - name: Build application
+        run: go build ./...
+
+      - name: Run static analysis
+        run: go vet ./...
+
+      - name: Generate disposable Linux fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ROOT="$(mktemp -d "$RUNNER_TEMP/proxfin-fixture-XXXXXX")"
+          CONFIG="$ROOT/config"
+          TEMP_DIR="$ROOT/temp"
+          BINARY="$ROOT/proxfin-test"
+          PORT=29126
+
+          mkdir -p "$CONFIG" "$TEMP_DIR"
+
+          go build -o "$BINARY" .
+
+          TMPDIR="$TEMP_DIR" \
+            "$BINARY" \
+            -port="$PORT" \
+            -bind=127.0.0.1 \
+            -config="$CONFIG" \
+            > "$ROOT/startup.log" 2>&1 &
+
+          PID=$!
+
+          cleanup() {
+            if kill -0 "$PID" 2>/dev/null; then
+              kill "$PID" 2>/dev/null || true
+            fi
+            wait "$PID" 2>/dev/null || true
+          }
+
+          trap cleanup EXIT
+
+          READY=0
+
+          for attempt in $(seq 1 60); do
+            if curl -fsS --max-time 2 \
+              "http://127.0.0.1:$PORT/web/" \
+              > /dev/null; then
+              READY=1
+              break
+            fi
+
+            if ! kill -0 "$PID" 2>/dev/null; then
+              echo "Application stopped unexpectedly"
+              cat "$ROOT/startup.log"
+              exit 1
+            fi
+
+            sleep 1
+          done
+
+          if [[ "$READY" != "1" ]]; then
+            echo "Application readiness check failed"
+            cat "$ROOT/startup.log"
+            exit 1
+          fi
+
+          echo "PASS: Application started on Linux"
+
+          cleanup
+          trap - EXIT
+
+          export FIXTURE_CONFIG="$CONFIG"
+          export FIXTURE_ARCHIVE="$ROOT/same-port-backup.zip"
+
+          python3 <<'PY'
+          import json
+          import os
+          import pathlib
+          import zipfile
+
+          config = pathlib.Path(os.environ["FIXTURE_CONFIG"])
+          archive = pathlib.Path(os.environ["FIXTURE_ARCHIVE"])
+
+          required = [
+              "authentication.json",
+              "pms.json",
+              "settings.json",
+              "xepg.json",
+              "urls.json",
+          ]
+
+          for name in required:
+              path = config / name
+
+              if not path.is_file():
+                  raise RuntimeError(f"Missing file: {name}")
+
+              data = json.loads(path.read_text(encoding="utf-8"))
+
+              if not isinstance(data, dict):
+                  raise RuntimeError(f"Invalid JSON object: {name}")
+
+              print(f"PASS: {name}")
+
+          settings = json.loads(
+              (config / "settings.json").read_text(encoding="utf-8")
+          )
+
+          if not settings.get("uuid"):
+              raise RuntimeError("Missing fixture UUID")
+
+          with zipfile.ZipFile(
+              archive, "w", zipfile.ZIP_DEFLATED
+          ) as output:
+              for name in required:
+                  output.write(config / name, arcname=name)
+
+          with zipfile.ZipFile(archive) as source:
+              if sorted(source.namelist()) != sorted(required):
+                  raise RuntimeError("Unexpected archive contents")
+
+              if source.testzip() is not None:
+                  raise RuntimeError("Invalid ZIP archive")
+
+              for name in required:
+                  if source.read(name) != (config / name).read_bytes():
+                      raise RuntimeError(f"Archive mismatch: {name}")
+
+          print("PASS: Portable Linux fixture generated")
+          PY
+
+          echo "PROXFIN_TEST_FIXTURE=$FIXTURE_ARCHIVE" >> "$GITHUB_ENV"
+
+      - name: Run same-port restoration test
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f "$PROXFIN_TEST_FIXTURE"
+
+          go test ./src \
+            -run '^Test.*SamePort' \
+            -count=1 \
+            -timeout=5m \
+            -v | tee "$RUNNER_TEMP/same-port-test.log"
+
+          if grep -q -- '--- SKIP:' \
+            "$RUNNER_TEMP/same-port-test.log"; then
+            echo "Same-port test unexpectedly skipped"
+            exit 1
+          fi
+
+          if ! grep -q -- '--- PASS: Test.*SamePort' \
+            "$RUNNER_TEMP/same-port-test.log"; then
+            echo "No successful same-port test detected"
+            exit 1
+          fi
+
+      - name: Run recovery regression tests
+        run: |
+          go test ./src \
+            -run '^Test(Startup|RefreshTransaction|ChannelMappingRecovery|StreamingURLRecovery|XEPG|CombinedXEPGRecovery|ProviderRecovery)' \
+            -short \
+            -count=5 \
+            -timeout=10m \
+            -v
+
+      - name: Run Linux race detection
+        env:
+          GORACE: "halt_on_error=1"
+        run: |
+          go test -race ./src \
+            -run '^Test(Startup|RefreshTransaction|ChannelMappingRecovery|StreamingURLRecovery|XEPG|CombinedXEPGRecovery|ProviderRecovery)' \
+            -short \
+            -count=3 \
+            -timeout=10m \
+            -v
+
+      - name: Run complete recovery memory benchmarks
+        run: |
+          go test ./src \
+            -run '^Test(XEPGRecoveryMemoryScale|XEPGExpandedRecoveryMemoryScale|XEPGFullRecoveryMemoryScale)$' \
+            -count=1 \
+            -timeout=5m \
+            -v
+
+      - name: Run full short test suite
+        run: |
+          go test ./... \
+            -short \
+            -count=1 \
+            -timeout=5m
+
+      - name: Report successful validation
+        run: |
+          echo "PASS: Linux compilation"
+          echo "PASS: Static analysis"
+          echo "PASS: Portable fixture generation"
+          echo "PASS: Same-port restoration"
+          echo "PASS: Recovery regression tests"
+          echo "PASS: Targeted race detection"
+          echo "PASS: Memory test command"
+          echo "PASS: Full short test suite"
