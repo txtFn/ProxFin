@@ -26,7 +26,7 @@ jobs:
 
     steps:
       - name: Checkout isolated testing branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           persist-credentials: false
 
@@ -45,7 +45,7 @@ jobs:
           echo "Commit: $GITHUB_SHA"
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
@@ -220,7 +220,7 @@ jobs:
       - name: Run recovery regression tests
         run: |
           go test ./src \
-            -run '^Test(Startup|RefreshTransaction|ChannelMappingRecovery|StreamingURLRecovery|XEPG|CombinedXEPGRecovery|ProviderRecovery)' \
+            -run '^Test(Startup|RefreshTransaction|ChannelMappingRecovery|StreamingURLRecovery|XEPG|CombinedXEPGRecovery|ProviderRecovery|PMSRecovery|GuideNumberPMS|DirectHLS)' \
             -short \
             -count=5 \
             -timeout=10m \
@@ -231,7 +231,7 @@ jobs:
           GORACE: "halt_on_error=1"
         run: |
           go test -race ./src \
-            -run '^Test(Startup|RefreshTransaction|ChannelMappingRecovery|StreamingURLRecovery|XEPG|CombinedXEPGRecovery|ProviderRecovery)' \
+            -run '^Test(Startup|RefreshTransaction|ChannelMappingRecovery|StreamingURLRecovery|XEPG|CombinedXEPGRecovery|ProviderRecovery|PMSRecovery|GuideNumberPMS|DirectHLS)' \
             -short \
             -count=3 \
             -timeout=10m \
@@ -249,7 +249,7 @@ jobs:
         run: |
           go test ./... \
             -short \
-            -count=1 \
+            -count=3 \
             -timeout=5m
 
       - name: Report successful validation
