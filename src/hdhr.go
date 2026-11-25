@@ -196,7 +196,7 @@ func getLineup() (jsonContent []byte, err error) {
 	jsonContent, err = json.MarshalIndent(lineup, "", "  ")
 
 	// New guide numbers are saved once per lineup, not once per channel.
-	if pmsGuideNumbers.dirty {
+	if pmsGuideNumbers.dirty && Data.Cache.PMS != nil {
 		if errSave := saveMapToJSONFile(System.File.PMS, Data.Cache.PMS); errSave != nil {
 			ShowError(errSave, 0)
 		}
@@ -204,6 +204,7 @@ func getLineup() (jsonContent []byte, err error) {
 
 	Data.Cache.PMS = nil
 	pmsGuideNumbers.used = nil
+	pmsGuideNumbers.dirty = false
 
 	saveStreamingURLs()
 

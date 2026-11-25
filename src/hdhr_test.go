@@ -26,8 +26,21 @@ newID:
 
 func TestGuideNumberPMSMatchesThePreviousAlgorithm(t *testing.T) {
 	saved := System.File.PMS
+	savedCache := Data.Cache.PMS
+	savedGuideNumbers := pmsGuideNumbers
+
 	System.File.PMS = filepath.Join(t.TempDir(), "pms.json")
-	t.Cleanup(func() { System.File.PMS = saved; pmsGuideNumbers.used = nil; Data.Cache.PMS = nil })
+
+	t.Cleanup(func() {
+		System.File.PMS = saved
+		Data.Cache.PMS = savedCache
+		pmsGuideNumbers = savedGuideNumbers
+	})
+
+	Data.Cache.PMS = nil
+	pmsGuideNumbers.used = nil
+	pmsGuideNumbers.next = 0
+	pmsGuideNumbers.dirty = false
 
 	// Existing guide numbers with gaps (id-1, id-3, id-4 are free).
 	existing := map[string]interface{}{"A": "id-0", "B": "id-2", "C": "id-5", "D": "id-6"}
@@ -64,8 +77,21 @@ func TestGuideNumberPMSMatchesThePreviousAlgorithm(t *testing.T) {
 // Thousands of new channels used to take minutes per /lineup.json request.
 func TestGuideNumberPMSScales(t *testing.T) {
 	saved := System.File.PMS
+	savedCache := Data.Cache.PMS
+	savedGuideNumbers := pmsGuideNumbers
+
 	System.File.PMS = filepath.Join(t.TempDir(), "pms.json")
-	t.Cleanup(func() { System.File.PMS = saved; pmsGuideNumbers.used = nil; Data.Cache.PMS = nil })
+
+	t.Cleanup(func() {
+		System.File.PMS = saved
+		Data.Cache.PMS = savedCache
+		pmsGuideNumbers = savedGuideNumbers
+	})
+
+	Data.Cache.PMS = nil
+	pmsGuideNumbers.used = nil
+	pmsGuideNumbers.next = 0
+	pmsGuideNumbers.dirty = false
 	if err := saveMapToJSONFile(System.File.PMS, map[string]interface{}{}); err != nil {
 		t.Fatal(err)
 	}
