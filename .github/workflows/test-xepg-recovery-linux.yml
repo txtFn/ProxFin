@@ -190,14 +190,14 @@ jobs:
           print("PASS: Portable Linux fixture generated")
           PY
 
-          echo "PROXFIN_TEST_FIXTURE=$FIXTURE_ARCHIVE" >> "$GITHUB_ENV"
+          echo "PROXFIN_TEST_FIXTURE=$CONFIG" >> "$GITHUB_ENV"
 
       - name: Run same-port restoration test
         shell: bash
         run: |
           set -euo pipefail
 
-          test -f "$PROXFIN_TEST_FIXTURE"
+          test -d "$PROXFIN_TEST_FIXTURE"
 
           go test ./src \
             -run '^Test.*SamePort' \
