@@ -20,6 +20,10 @@ func fetchDirectHLSMediaWithRetry(
 	client *http.Client,
 	upstreamURL string,
 ) ([]byte, string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, "", err
+	}
+
 	select {
 	case directHLSRecoverySlots <- struct{}{}:
 		defer func() { <-directHLSRecoverySlots }()
@@ -43,12 +47,22 @@ func fetchDirectHLSMediaWithRetry(
 		if err != nil {
 			return nil, "", err
 		}
+
 		req.Header.Set("Accept", "*/*")
 
 		resp, err := client.Do(req)
 		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, "", ctxErr
+			}
+
 			lastErr = err
 		} else {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				resp.Body.Close()
+				return nil, "", ctxErr
+			}
+
 			if resp.StatusCode != http.StatusOK {
 				resp.Body.Close()
 				return nil, "", errors.New("upstream returned non-200 status")
@@ -61,6 +75,10 @@ func fetchDirectHLSMediaWithRetry(
 				resp.ContentLength,
 			)
 			resp.Body.Close()
+
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, "", ctxErr
+			}
 
 			if readErr == nil {
 				return data, contentType, nil
@@ -82,6 +100,10 @@ func fetchDirectHLSMediaWithRetry(
 		}
 	}
 
+	if err := ctx.Err(); err != nil {
+		return nil, "", err
+	}
+
 	if lastErr == nil {
 		lastErr = io.ErrUnexpectedEOF
 	}
@@ -101,12 +123,22 @@ func fetchDirectHLSMediaFromResponse(
 		return nil, "", errors.New("missing upstream response")
 	}
 
+	if err := ctx.Err(); err != nil {
+		firstResponse.Body.Close()
+		return nil, "", err
+	}
+
 	select {
 	case directHLSRecoverySlots <- struct{}{}:
 		defer func() { <-directHLSRecoverySlots }()
 	case <-ctx.Done():
 		firstResponse.Body.Close()
 		return nil, "", ctx.Err()
+	}
+
+	if err := ctx.Err(); err != nil {
+		firstResponse.Body.Close()
+		return nil, "", err
 	}
 
 	contentType := firstResponse.Header.Get("Content-Type")
@@ -117,6 +149,10 @@ func fetchDirectHLSMediaFromResponse(
 	)
 	firstResponse.Body.Close()
 
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, "", ctxErr
+	}
+
 	if err == nil {
 		return data, contentType, nil
 	}
@@ -125,15 +161,15 @@ func fetchDirectHLSMediaFromResponse(
 		return nil, "", err
 	}
 
-	if ctx.Err() != nil {
-		return nil, "", ctx.Err()
-	}
-
 	// Retry once without releasing the concurrency slot.
 	select {
 	case <-ctx.Done():
 		return nil, "", ctx.Err()
 	case <-time.After(250 * time.Millisecond):
+	}
+
+	if err := ctx.Err(); err != nil {
+		return nil, "", err
 	}
 
 	req, err := http.NewRequestWithContext(
@@ -150,9 +186,17 @@ func fetchDirectHLSMediaFromResponse(
 
 	resp, err := client.Do(req)
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, "", ctxErr
+		}
+
 		return nil, "", err
 	}
 	defer resp.Body.Close()
+
+	if err := ctx.Err(); err != nil {
+		return nil, "", err
+	}
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, "", errors.New("retry returned non-200 status")
@@ -162,6 +206,11 @@ func fetchDirectHLSMediaFromResponse(
 		resp.Body,
 		resp.ContentLength,
 	)
+
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, "", ctxErr
+	}
+
 	if err != nil {
 		return nil, "", err
 	}
