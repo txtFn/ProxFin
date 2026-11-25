@@ -249,7 +249,14 @@ func Init() (err error) {
 }
 
 // StartSystem : System wird gestartet
-func StartSystem(updateProviderFiles bool) (err error) {
+func StartSystem(updateProviderFiles bool) error {
+	return runRefreshTransaction(func() error {
+		return startSystemLocked(updateProviderFiles)
+	})
+}
+
+// Caller must own refreshMutex.
+func startSystemLocked(updateProviderFiles bool) (err error) {
 
 	setDeviceID()
 
@@ -287,7 +294,7 @@ func StartSystem(updateProviderFiles bool) (err error) {
 		return
 	}
 
-	buildXEPG(true)
+	buildXEPG(false)
 
 	return
 }

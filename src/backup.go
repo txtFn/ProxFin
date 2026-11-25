@@ -125,6 +125,16 @@ func ThreadfinBackup() (archiv string, err error) {
 }
 
 func ThreadfinRestore(archive string) (newWebURL string, err error) {
+	err = runRefreshTransaction(func() error {
+		var restoreErr error
+		newWebURL, restoreErr = threadfinRestoreLocked(archive)
+		return restoreErr
+	})
+	return
+}
+
+// Caller must own refreshMutex.
+func threadfinRestoreLocked(archive string) (newWebURL string, err error) {
 
 	var newPort, oldPort, backupVersion, tmpRestore string
 
@@ -184,7 +194,7 @@ func ThreadfinRestore(archive string) (newWebURL string, err error) {
 			return "", err
 		}
 
-		err = StartSystem(true)
+		err = startSystemLocked(true)
 		if err != nil {
 			ShowError(err, 0)
 			return "", err
@@ -202,6 +212,16 @@ func ThreadfinRestore(archive string) (newWebURL string, err error) {
 }
 
 func ThreadfinRestoreFromWeb(input string) (newWebURL string, err error) {
+	err = runRefreshTransaction(func() error {
+		var restoreErr error
+		newWebURL, restoreErr = threadfinRestoreFromWebLocked(input)
+		return restoreErr
+	})
+	return
+}
+
+// Caller must own refreshMutex.
+func threadfinRestoreFromWebLocked(input string) (newWebURL string, err error) {
 
 	// Base64 Json String in base64 umwandeln
 	b64data := input[strings.IndexByte(input, ',')+1:]
@@ -220,7 +240,7 @@ func ThreadfinRestoreFromWeb(input string) (newWebURL string, err error) {
 		return
 	}
 
-	newWebURL, err = ThreadfinRestore(archive)
+	newWebURL, err = threadfinRestoreLocked(archive)
 
 	return
 }

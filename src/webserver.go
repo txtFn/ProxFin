@@ -671,7 +671,7 @@ func WS(w http.ResponseWriter, r *http.Request) {
 			resetWebLog()
 
 			if len(request.Base64) > 0 {
-				newWebURL, err := ThreadfinRestoreFromWeb(request.Base64)
+				newWebURL, err := threadfinRestoreFromWebLocked(request.Base64)
 				if err != nil {
 					ShowError(err, 000)
 					response.Alert = err.Error()

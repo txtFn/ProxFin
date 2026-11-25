@@ -112,191 +112,194 @@ func countXMLTV(r io.Reader) (channels, programs int, err error) {
 var buildXEPGCount int
 
 // XEPG Daten erstellen
-func buildXEPG(background bool) {
-	xepgMutex.Lock()
-	defer func() {
-		xepgMutex.Unlock()
-	}()
-
-	if System.ScanInProgress == 1 {
-		return
-	}
-
-	System.ScanInProgress = 1
-	// Enter maintenance during core steps
-
-	// Clear streaming URL cache
-	resetStreamingURLs()
-	saveStreamingURLs()
+func initializeXEPGImageCache() error {
 
 	var err error
 
-	Data.Cache.Images, err = imgcache.New(System.Folder.ImagesCache, fmt.Sprintf("%s://%s/images/", System.ServerProtocol.WEB, System.Domain), Settings.CacheImages)
+	Data.Cache.Images, err = imgcache.New(
+		System.Folder.ImagesCache,
+		fmt.Sprintf(
+			"%s://%s/images/",
+			System.ServerProtocol.WEB,
+			System.Domain,
+		),
+		Settings.CacheImages,
+	)
+
 	if err != nil {
-		ShowError(err, 0)
+		return fmt.Errorf(
+			"XEPG image cache initialization failed: %w",
+			err,
+		)
 	}
 
-	if Settings.EpgSource == "XEPG" {
-
-		switch background {
-
-		case true:
-
-			go func() {
-
-				createXEPGMapping()
-				createXEPGDatabase()
-				mapping()
-				cleanupXEPG()
-				createXMLTVFile()
-				createM3UFile()
-
-				showInfo("XEPG:" + fmt.Sprintf("Ready to use"))
-
-				if Settings.CacheImages && System.ImageCachingInProgress == 0 {
-
-					go func() {
-
-						systemMutex.Lock()
-						System.ImageCachingInProgress = 1
-						systemMutex.Unlock()
-
-						showInfo(fmt.Sprintf("Image Caching:Images are cached (%d)", len(Data.Cache.Images.Queue)))
-
-						Data.Cache.Images.Image.Caching()
-						Data.Cache.Images.Image.Remove()
-						showInfo("Image Caching:Done")
-
-						createXMLTVFile()
-						createM3UFile()
-
-						systemMutex.Lock()
-						System.ImageCachingInProgress = 0
-						systemMutex.Unlock()
-
-					}()
-
-				}
-
-				// Core work is done; exit maintenance
-				systemMutex.Lock()
-				System.ScanInProgress = 0
-				systemMutex.Unlock()
-
-				// Cache löschen
-				clearXMLTVCache()
-				runtime.GC()
-
-			}()
-
-		case false:
-
-			createXEPGMapping()
-			createXEPGDatabase()
-			mapping()
-			cleanupXEPG()
-			createXMLTVFile()
-			createM3UFile()
-
-			// Exit maintenance before long file generation to keep UI responsive
-			System.ScanInProgress = 0
-
-			go func() {
-
-				if Settings.CacheImages && System.ImageCachingInProgress == 0 {
-
-					go func() {
-
-						systemMutex.Lock()
-						System.ImageCachingInProgress = 1
-						systemMutex.Unlock()
-
-						showInfo(fmt.Sprintf("Image Caching:Images are cached (%d)", len(Data.Cache.Images.Queue)))
-
-						Data.Cache.Images.Image.Caching()
-						Data.Cache.Images.Image.Remove()
-						showInfo("Image Caching:Done")
-
-						createXMLTVFile()
-						createM3UFile()
-
-						systemMutex.Lock()
-						System.ImageCachingInProgress = 0
-						systemMutex.Unlock()
-
-					}()
-
-				}
-
-				showInfo("XEPG:" + fmt.Sprintf("Ready to use"))
-
-				// Cache löschen
-				clearXMLTVCache()
-				runtime.GC()
-
-			}()
-
-		}
-
-	} else {
-
-		getLineup()
-		System.ScanInProgress = 0
-
-	}
-
+	return nil
 }
 
-// Update XEPG data
-func updateXEPG(background bool) {
+func processXEPGImageCache() error {
+
+	if !Settings.CacheImages {
+		return nil
+	}
+
+	systemMutex.Lock()
+
+	if System.ImageCachingInProgress != 0 {
+		systemMutex.Unlock()
+		return fmt.Errorf(
+			"XEPG image caching is already in progress",
+		)
+	}
+
+	System.ImageCachingInProgress = 1
+
+	systemMutex.Unlock()
+
+	defer func() {
+		systemMutex.Lock()
+		System.ImageCachingInProgress = 0
+		systemMutex.Unlock()
+	}()
+
+	showInfo(fmt.Sprintf(
+		"Image Caching:Images are cached (%d)",
+		len(Data.Cache.Images.Queue),
+	))
+
+	Data.Cache.Images.Image.Caching()
+	Data.Cache.Images.Image.Remove()
+
+	if err := createXMLTVFile(); err != nil {
+		return fmt.Errorf(
+			"Image cache XMLTV regeneration failed: %w",
+			err,
+		)
+	}
+
+	if err := createM3UFile(); err != nil {
+		return fmt.Errorf(
+			"Image cache M3U regeneration failed: %w",
+			err,
+		)
+	}
+
+	showInfo("Image Caching:Done")
+
+	return nil
+}
+
+func beginXEPGProcessing() bool {
+
+	xepgMutex.Lock()
+
+	systemMutex.Lock()
 
 	if System.ScanInProgress == 1 {
-		return
+		systemMutex.Unlock()
+		xepgMutex.Unlock()
+		return false
 	}
 
 	System.ScanInProgress = 1
 
-	if Settings.EpgSource == "XEPG" {
+	systemMutex.Unlock()
 
-		switch background {
-
-		case false:
-
-			createXEPGDatabase()
-			mapping()
-			cleanupXEPG()
-
-			// Exit maintenance before long file generation to keep UI responsive
-			System.ScanInProgress = 0
-
-			go func() {
-
-				createXMLTVFile()
-				createM3UFile()
-				showInfo("XEPG:" + fmt.Sprintf("Ready to use"))
-
-			}()
-
-		case true:
-			System.ScanInProgress = 0
-
-		}
-
-	} else {
-
-		System.ScanInProgress = 0
-
-	}
-
-	// Cache löschen
-	clearXMLTVCache()
-
-	return
+	return true
 }
 
-// Mapping Menü für die XMLTV Dateien erstellen
+func finishXEPGProcessing() {
+
+	systemMutex.Lock()
+	System.ScanInProgress = 0
+	systemMutex.Unlock()
+
+	xepgMutex.Unlock()
+}
+
+func buildXEPG(background bool) {
+
+	if !beginXEPGProcessing() {
+		return
+	}
+
+	run := func() {
+
+		defer finishXEPGProcessing()
+		defer runtime.GC()
+		defer clearXMLTVCache()
+
+		resetStreamingURLs()
+
+		if err := saveStreamingURLs(); err != nil {
+			showInfo("XEPG:Streaming URL initialization failed")
+			return
+		}
+
+		if err := initializeXEPGImageCache(); err != nil {
+			showInfo("XEPG:Image cache initialization failed")
+			return
+		}
+
+		if Settings.EpgSource != "XEPG" {
+			getLineup()
+			return
+		}
+
+		if err := executeXEPGRecoveryStages(
+			fullXEPGRecoveryStages(),
+		); err != nil {
+
+			showInfo("XEPG:Recovery pipeline failed")
+			return
+		}
+
+		if err := processXEPGImageCache(); err != nil {
+			showInfo("XEPG:Image cache processing failed")
+			return
+		}
+
+		showInfo("XEPG:Ready to use")
+	}
+
+	if background {
+		go run()
+	} else {
+		run()
+	}
+}
+
+func updateXEPG(background bool) {
+
+	// Preserve the existing background-update behavior.
+	if background {
+		return
+	}
+
+	if !beginXEPGProcessing() {
+		return
+	}
+
+	defer finishXEPGProcessing()
+	defer runtime.GC()
+	defer clearXMLTVCache()
+
+	if Settings.EpgSource != "XEPG" {
+		return
+	}
+
+	if err := executeXEPGRecoveryStages(
+		incrementalXEPGRecoveryStages(),
+	); err != nil {
+
+		showInfo("XEPG:Incremental recovery pipeline failed")
+		return
+	}
+
+	showInfo("XEPG:Ready to use")
+}
+
 func createXEPGMapping() error {
-    var mappingErrors error
+	var mappingErrors error
 	Data.XMLTV.Files = getLocalProviderFiles("xmltv")
 	Data.XMLTV.Mapping = make(map[string]interface{})
 
@@ -339,10 +342,10 @@ func createXEPGMapping() error {
 				// again instead)
 				Data.XMLTV.Files = append(Data.XMLTV.Files[:i], Data.XMLTV.Files[i+1:]...)
 				err = fmt.Errorf(
-    				"XMLTV provider %s (%s): %w",
-    				fileID,
-    				getProviderParameter(fileID, "xmltv", "name"),
-    				err,
+					"XMLTV provider %s (%s): %w",
+					fileID,
+					getProviderParameter(fileID, "xmltv", "name"),
+					err,
 				)
 
 				mappingErrors = errors.Join(mappingErrors, err)
@@ -446,7 +449,9 @@ func createXEPGDatabase() (err error) {
 	withProviders(func() { Settings = reloaded })
 
 	// Remove duplicate channels from existing XEPG database based on new hash logic
-	removeDuplicateChannels()
+	if err = removeDuplicateChannels(); err != nil {
+		return err
+	}
 
 	// Get current M3U channels
 	m3uChannels := make(map[string]M3UChannelStructXEPG)
@@ -1050,287 +1055,287 @@ func mapping() (err error) {
 // XMLTV Datei erstellen
 func createXMLTVFile() error {
 
-imgc := Data.Cache.Images
+	imgc := Data.Cache.Images
 
-Data.Cache.ImagesFiles = []string{}
-Data.Cache.ImagesURLS = []string{}
-Data.Cache.ImagesCache = []string{}
+	Data.Cache.ImagesFiles = []string{}
+	Data.Cache.ImagesURLS = []string{}
+	Data.Cache.ImagesCache = []string{}
 
-files, readErr := os.ReadDir(System.Folder.ImagesCache)
+	files, readErr := os.ReadDir(System.Folder.ImagesCache)
 
-if readErr == nil {
-for _, file := range files {
-if indexOfString(file.Name(), Data.Cache.ImagesCache) == -1 {
-Data.Cache.ImagesCache = append(
-Data.Cache.ImagesCache,
-file.Name(),
-)
-}
-}
-} else {
-showDebug("XEPG:Image cache directory unavailable", 3)
-}
+	if readErr == nil {
+		for _, file := range files {
+			if indexOfString(file.Name(), Data.Cache.ImagesCache) == -1 {
+				Data.Cache.ImagesCache = append(
+					Data.Cache.ImagesCache,
+					file.Name(),
+				)
+			}
+		}
+	} else {
+		showDebug("XEPG:Image cache directory unavailable", 3)
+	}
 
-// Never clear channel mappings because provider data is unavailable.
-if len(Data.XMLTV.Files) == 0 && len(Data.Streams.Active) == 0 {
-if len(Data.XEPG.Channels) > 0 {
-return errors.New(
-"XMLTV generation blocked: provider data unavailable while channel mappings exist",
-)
-}
+	// Never clear channel mappings because provider data is unavailable.
+	if len(Data.XMLTV.Files) == 0 && len(Data.Streams.Active) == 0 {
+		if len(Data.XEPG.Channels) > 0 {
+			return errors.New(
+				"XMLTV generation blocked: provider data unavailable while channel mappings exist",
+			)
+		}
 
-return nil
-}
+		return nil
+	}
 
-showInfo("XEPG:" + fmt.Sprintf(
-"Create XMLTV file (%s)",
-System.File.XML,
-))
+	showInfo("XEPG:" + fmt.Sprintf(
+		"Create XMLTV file (%s)",
+		System.File.XML,
+	))
 
-xmlFile, err := createAtomic(System.File.XML)
-if err != nil {
-return fmt.Errorf("XMLTV file creation failed: %w", err)
-}
+	xmlFile, err := createAtomic(System.File.XML)
+	if err != nil {
+		return fmt.Errorf("XMLTV file creation failed: %w", err)
+	}
 
-defer xmlFile.Discard()
+	defer xmlFile.Discard()
 
-writer := bufio.NewWriterSize(xmlFile, 1<<20)
+	writer := bufio.NewWriterSize(xmlFile, 1<<20)
 
-var xepgXML XMLTV
+	var xepgXML XMLTV
 
-xepgXML.Generator = System.Name
+	xepgXML.Generator = System.Name
 
-if System.Branch == "main" {
-xepgXML.Source = fmt.Sprintf(
-"%s - %s",
-System.Name,
-System.Version,
-)
-} else {
-xepgXML.Source = fmt.Sprintf(
-"%s - %s.%s",
-System.Name,
-System.Version,
-System.Build,
-)
-}
+	if System.Branch == "main" {
+		xepgXML.Source = fmt.Sprintf(
+			"%s - %s",
+			System.Name,
+			System.Version,
+		)
+	} else {
+		xepgXML.Source = fmt.Sprintf(
+			"%s - %s.%s",
+			System.Name,
+			System.Version,
+			System.Build,
+		)
+	}
 
-if _, err = writer.WriteString(xml.Header); err != nil {
-return err
-}
+	if _, err = writer.WriteString(xml.Header); err != nil {
+		return err
+	}
 
-if _, err = writer.WriteString("<tv>\n"); err != nil {
-return err
-}
+	if _, err = writer.WriteString("<tv>\n"); err != nil {
+		return err
+	}
 
-if _, err = writer.WriteString("  <generator>"); err != nil {
-return err
-}
+	if _, err = writer.WriteString("  <generator>"); err != nil {
+		return err
+	}
 
-if err = xml.EscapeText(writer, []byte(xepgXML.Generator)); err != nil {
-return err
-}
+	if err = xml.EscapeText(writer, []byte(xepgXML.Generator)); err != nil {
+		return err
+	}
 
-if _, err = writer.WriteString("</generator>\n"); err != nil {
-return err
-}
+	if _, err = writer.WriteString("</generator>\n"); err != nil {
+		return err
+	}
 
-if _, err = writer.WriteString("  <source>"); err != nil {
-return err
-}
+	if _, err = writer.WriteString("  <source>"); err != nil {
+		return err
+	}
 
-if err = xml.EscapeText(writer, []byte(xepgXML.Source)); err != nil {
-return err
-}
+	if err = xml.EscapeText(writer, []byte(xepgXML.Source)); err != nil {
+		return err
+	}
 
-if _, err = writer.WriteString("</source>\n"); err != nil {
-return err
-}
+	if _, err = writer.WriteString("</source>\n"); err != nil {
+		return err
+	}
 
-type channelEntry struct {
-idx int
-ch  XEPGChannelStruct
-}
+	type channelEntry struct {
+		idx int
+		ch  XEPGChannelStruct
+	}
 
-var entries []channelEntry
+	var entries []channelEntry
 
-for id, dxc := range Data.XEPG.Channels {
-var xepgChannel XEPGChannelStruct
+	for id, dxc := range Data.XEPG.Channels {
+		var xepgChannel XEPGChannelStruct
 
-if err := json.Unmarshal(
-[]byte(mapToJSON(dxc)),
-&xepgChannel,
-); err != nil {
-return fmt.Errorf(
-"XMLTV channel decoding failed for %s: %w",
-id,
-err,
-)
-}
+		if err := json.Unmarshal(
+			[]byte(mapToJSON(dxc)),
+			&xepgChannel,
+		); err != nil {
+			return fmt.Errorf(
+				"XMLTV channel decoding failed for %s: %w",
+				id,
+				err,
+			)
+		}
 
-entries = append(entries, channelEntry{
-idx: len(entries),
-ch:  xepgChannel,
-})
-}
+		entries = append(entries, channelEntry{
+			idx: len(entries),
+			ch:  xepgChannel,
+		})
+	}
 
-sort.Slice(entries, func(i, j int) bool {
-chI := entries[i].ch.TvgChno
-chJ := entries[j].ch.TvgChno
+	sort.Slice(entries, func(i, j int) bool {
+		chI := entries[i].ch.TvgChno
+		chJ := entries[j].ch.TvgChno
 
-numI, errI := strconv.ParseFloat(chI, 64)
-numJ, errJ := strconv.ParseFloat(chJ, 64)
+		numI, errI := strconv.ParseFloat(chI, 64)
+		numJ, errJ := strconv.ParseFloat(chJ, 64)
 
-if errI == nil && errJ == nil {
-return numI < numJ
-}
+		if errI == nil && errJ == nil {
+			return numI < numJ
+		}
 
-if errI == nil && errJ != nil {
-return true
-}
+		if errI == nil && errJ != nil {
+			return true
+		}
 
-if errI != nil && errJ == nil {
-return false
-}
+		if errI != nil && errJ == nil {
+			return false
+		}
 
-return chI < chJ
-})
+		return chI < chJ
+	})
 
-for _, e := range entries {
-xepgChannel := e.ch
+	for _, e := range entries {
+		xepgChannel := e.ch
 
-if xepgChannel.TvgName == "" {
-xepgChannel.TvgName = xepgChannel.Name
-}
+		if xepgChannel.TvgName == "" {
+			xepgChannel.TvgName = xepgChannel.Name
+		}
 
-if xepgChannel.XName == "" {
-xepgChannel.XName = xepgChannel.TvgName
-}
+		if xepgChannel.XName == "" {
+			xepgChannel.XName = xepgChannel.TvgName
+		}
 
-if xepgChannel.XActive && !xepgChannel.XHideChannel {
-if (Settings.XepgReplaceChannelTitle &&
-xepgChannel.XMapping == "PPV") ||
-xepgChannel.XName != "" {
+		if xepgChannel.XActive && !xepgChannel.XHideChannel {
+			if (Settings.XepgReplaceChannelTitle &&
+				xepgChannel.XMapping == "PPV") ||
+				xepgChannel.XName != "" {
 
-channel := Channel{
-ID: xepgChannel.XChannelID,
-Icon: Icon{
-Src: imgc.Image.GetURL(
-xepgChannel.TvgLogo,
-Settings.HttpThreadfinDomain,
-Settings.Port,
-Settings.ForceHttps,
-Settings.HttpsPort,
-Settings.HttpsThreadfinDomain,
-),
-},
-DisplayName: []DisplayName{
-{Value: xepgChannel.XName},
-},
-Active: xepgChannel.XActive,
-Live:   xepgChannel.Live,
-}
+				channel := Channel{
+					ID: xepgChannel.XChannelID,
+					Icon: Icon{
+						Src: imgc.Image.GetURL(
+							xepgChannel.TvgLogo,
+							Settings.HttpThreadfinDomain,
+							Settings.Port,
+							Settings.ForceHttps,
+							Settings.HttpsPort,
+							Settings.HttpsThreadfinDomain,
+						),
+					},
+					DisplayName: []DisplayName{
+						{Value: xepgChannel.XName},
+					},
+					Active: xepgChannel.XActive,
+					Live:   xepgChannel.Live,
+				}
 
-data, marshalErr := xml.MarshalIndent(
-channel,
-"  ",
-"    ",
-)
+				data, marshalErr := xml.MarshalIndent(
+					channel,
+					"  ",
+					"    ",
+				)
 
-if marshalErr != nil {
-return fmt.Errorf(
-"XMLTV channel encoding failed for %s: %w",
-xepgChannel.XChannelID,
-marshalErr,
-)
-}
+				if marshalErr != nil {
+					return fmt.Errorf(
+						"XMLTV channel encoding failed for %s: %w",
+						xepgChannel.XChannelID,
+						marshalErr,
+					)
+				}
 
-if _, err = writer.Write(data); err != nil {
-return err
-}
+				if _, err = writer.Write(data); err != nil {
+					return err
+				}
 
-if _, err = writer.WriteString("\n"); err != nil {
-return err
-}
-}
-}
-}
+				if _, err = writer.WriteString("\n"); err != nil {
+					return err
+				}
+			}
+		}
+	}
 
-for _, e := range entries {
-xepgChannel := e.ch
+	for _, e := range entries {
+		xepgChannel := e.ch
 
-if !xepgChannel.XActive || xepgChannel.XHideChannel {
-continue
-}
+		if !xepgChannel.XActive || xepgChannel.XHideChannel {
+			continue
+		}
 
-// Channels intentionally configured without EPG are valid.
-if xepgChannel.XmltvFile == "" ||
-xepgChannel.XmltvFile == "-" ||
-xepgChannel.XMapping == "" ||
-xepgChannel.XMapping == "-" {
-continue
-}
+		// Channels intentionally configured without EPG are valid.
+		if xepgChannel.XmltvFile == "" ||
+			xepgChannel.XmltvFile == "-" ||
+			xepgChannel.XMapping == "" ||
+			xepgChannel.XMapping == "-" {
+			continue
+		}
 
-programData, programErr := getProgramData(xepgChannel)
+		programData, programErr := getProgramData(xepgChannel)
 
-if programErr != nil {
-return fmt.Errorf(
-"XMLTV programme retrieval failed for channel %s: %w",
-xepgChannel.XChannelID,
-programErr,
-)
-}
+		if programErr != nil {
+			return fmt.Errorf(
+				"XMLTV programme retrieval failed for channel %s: %w",
+				xepgChannel.XChannelID,
+				programErr,
+			)
+		}
 
-for _, p := range programData.Program {
-data, marshalErr := xml.MarshalIndent(
-p,
-"  ",
-"    ",
-)
+		for _, p := range programData.Program {
+			data, marshalErr := xml.MarshalIndent(
+				p,
+				"  ",
+				"    ",
+			)
 
-if marshalErr != nil {
-return fmt.Errorf(
-"XMLTV programme encoding failed for channel %s: %w",
-xepgChannel.XChannelID,
-marshalErr,
-)
-}
+			if marshalErr != nil {
+				return fmt.Errorf(
+					"XMLTV programme encoding failed for channel %s: %w",
+					xepgChannel.XChannelID,
+					marshalErr,
+				)
+			}
 
-if _, err = writer.Write(data); err != nil {
-return err
-}
+			if _, err = writer.Write(data); err != nil {
+				return err
+			}
 
-if _, err = writer.WriteString("\n"); err != nil {
-return err
-}
-}
-}
+			if _, err = writer.WriteString("\n"); err != nil {
+				return err
+			}
+		}
+	}
 
-if _, err = writer.WriteString("</tv>\n"); err != nil {
-return err
-}
+	if _, err = writer.WriteString("</tv>\n"); err != nil {
+		return err
+	}
 
-if err = writer.Flush(); err != nil {
-return fmt.Errorf("XMLTV buffer flush failed: %w", err)
-}
+	if err = writer.Flush(); err != nil {
+		return fmt.Errorf("XMLTV buffer flush failed: %w", err)
+	}
 
-if err = xmlFile.Commit(); err != nil {
-return fmt.Errorf("XMLTV file commit failed: %w", err)
-}
+	if err = xmlFile.Commit(); err != nil {
+		return fmt.Errorf("XMLTV file commit failed: %w", err)
+	}
 
-showInfo("XEPG:" + fmt.Sprintf(
-"Compress XMLTV file (%s)",
-System.Compressed.GZxml,
-))
+	showInfo("XEPG:" + fmt.Sprintf(
+		"Compress XMLTV file (%s)",
+		System.Compressed.GZxml,
+	))
 
-if err = compressGZIPFile(
-System.File.XML,
-System.Compressed.GZxml,
-); err != nil {
-return fmt.Errorf("XMLTV compression failed: %w", err)
-}
+	if err = compressGZIPFile(
+		System.File.XML,
+		System.Compressed.GZxml,
+	); err != nil {
+		return fmt.Errorf("XMLTV compression failed: %w", err)
+	}
 
-return nil
+	return nil
 }
 
 // clearXMLTVCache drops the parsed XMLTV files and their programme index.
@@ -1892,14 +1897,14 @@ func getLocalXMLTV(file string, xmltv *XMLTV) (err error) {
 			showInfo("XEPG:" + "Using streaming parser for large XMLTV file: " + file)
 			err = parseXMLTVStream(file, xmltv)
 		} else {
-    		// Use original method for smaller files
-    		content, readErr := readByteFromFile(file)
-    		if readErr != nil {
-        		return fmt.Errorf("failed to read local XMLTV file: %w", readErr)
-    		}
+			// Use original method for smaller files
+			content, readErr := readByteFromFile(file)
+			if readErr != nil {
+				return fmt.Errorf("failed to read local XMLTV file: %w", readErr)
+			}
 
-    		// Propagate XML parsing errors
-    		err = xml.Unmarshal(content, xmltv)
+			// Propagate XML parsing errors
+			err = xml.Unmarshal(content, xmltv)
 		}
 
 		if err != nil {
@@ -1917,75 +1922,75 @@ func getLocalXMLTV(file string, xmltv *XMLTV) (err error) {
 
 // parseXMLTVStream : Streaming XML parser for large XMLTV files
 func parseXMLTVStream(file string, xmltv *XMLTV) error {
-xmlFile, err := openSharedFile(file)
-if err != nil {
-return err
-}
-defer xmlFile.Close()
+	xmlFile, err := openSharedFile(file)
+	if err != nil {
+		return err
+	}
+	defer xmlFile.Close()
 
-decoder := xml.NewDecoder(xmlFile)
+	decoder := xml.NewDecoder(xmlFile)
 
-xmltv.Channel = make([]*Channel, 0)
-xmltv.Program = make([]*Program, 0)
+	xmltv.Channel = make([]*Channel, 0)
+	xmltv.Program = make([]*Program, 0)
 
-var currentElement string
-var channelCount, programCount int
+	var currentElement string
+	var channelCount, programCount int
 
-for {
-token, err := decoder.Token()
-if err != nil {
-if errors.Is(err, io.EOF) {
-break
-}
-return fmt.Errorf("XMLTV token parsing failed: %w", err)
-}
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return fmt.Errorf("XMLTV token parsing failed: %w", err)
+		}
 
-switch se := token.(type) {
-case xml.StartElement:
-currentElement = se.Name.Local
+		switch se := token.(type) {
+		case xml.StartElement:
+			currentElement = se.Name.Local
 
-switch currentElement {
-case "tv":
-for _, attr := range se.Attr {
-switch attr.Name.Local {
-case "generator-info-name":
-xmltv.Generator = attr.Value
-case "source-info-name":
-xmltv.Source = attr.Value
-}
-}
+			switch currentElement {
+			case "tv":
+				for _, attr := range se.Attr {
+					switch attr.Name.Local {
+					case "generator-info-name":
+						xmltv.Generator = attr.Value
+					case "source-info-name":
+						xmltv.Source = attr.Value
+					}
+				}
 
-case "channel":
-var channel Channel
-if err := decoder.DecodeElement(&channel, &se); err != nil {
-return fmt.Errorf("XMLTV channel decoding failed: %w", err)
-}
+			case "channel":
+				var channel Channel
+				if err := decoder.DecodeElement(&channel, &se); err != nil {
+					return fmt.Errorf("XMLTV channel decoding failed: %w", err)
+				}
 
-xmltv.Channel = append(xmltv.Channel, &channel)
-channelCount++
+				xmltv.Channel = append(xmltv.Channel, &channel)
+				channelCount++
 
-if channelCount%1000 == 0 {
-showInfo(fmt.Sprintf("XMLTV Stream:Parsed %d channels", channelCount))
-}
+				if channelCount%1000 == 0 {
+					showInfo(fmt.Sprintf("XMLTV Stream:Parsed %d channels", channelCount))
+				}
 
-case "programme":
-var program Program
-if err := decoder.DecodeElement(&program, &se); err != nil {
-return fmt.Errorf("XMLTV programme decoding failed: %w", err)
-}
+			case "programme":
+				var program Program
+				if err := decoder.DecodeElement(&program, &se); err != nil {
+					return fmt.Errorf("XMLTV programme decoding failed: %w", err)
+				}
 
-xmltv.Program = append(xmltv.Program, &program)
-programCount++
+				xmltv.Program = append(xmltv.Program, &program)
+				programCount++
 
-if programCount%10000 == 0 {
-showInfo(fmt.Sprintf("XMLTV Stream:Parsed %d programs", programCount))
-}
-}
-}
-}
+				if programCount%10000 == 0 {
+					showInfo(fmt.Sprintf("XMLTV Stream:Parsed %d programs", programCount))
+				}
+			}
+		}
+	}
 
-showInfo(fmt.Sprintf("XMLTV Stream:Completed - %d channels, %d programs", channelCount, programCount))
-return nil
+	showInfo(fmt.Sprintf("XMLTV Stream:Completed - %d channels, %d programs", channelCount, programCount))
+	return nil
 }
 
 // uuidMatcher finds the database channel of a stream by its playlist and
@@ -2064,154 +2069,239 @@ func (m *uuidMatcher) find(fileID, uuid string) (XEPGChannelStruct, bool) {
 
 // M3U Datei erstellen
 func createM3UFile() error {
-    showInfo("XEPG:" + fmt.Sprintf("Create M3U file (%s)", System.File.M3U))
+	showInfo("XEPG:" + fmt.Sprintf("Create M3U file (%s)", System.File.M3U))
 
-    if err := saveM3UFile(nil); err != nil {
-        ShowError(err, 000)
-        return fmt.Errorf("M3U generation failed: %w", err)
-    }
+	if err := saveM3UFile(nil); err != nil {
+		ShowError(err, 000)
+		return fmt.Errorf("M3U generation failed: %w", err)
+	}
 
-    if err := saveStreamingURLs(); err != nil {
-        ShowError(err, 000)
-        return fmt.Errorf("streaming URL persistence failed: %w", err)
-    }
+	if err := saveStreamingURLs(); err != nil {
+		ShowError(err, 000)
+		return fmt.Errorf("streaming URL persistence failed: %w", err)
+	}
 
-    return nil
+	return nil
 }
 
 // XEPG Datenbank bereinigen
-func cleanupXEPG() {
+func cleanupXEPG() error {
 
-	var sourceIDs []string
+	showInfo("XEPG:Cleanup database")
 
-	for source := range Settings.Files.M3U {
-		sourceIDs = append(sourceIDs, source)
+	sourceIDs := make(map[string]struct{})
+
+	withProviders(func() {
+		for source := range Settings.Files.M3U {
+			sourceIDs[source] = struct{}{}
+		}
+
+		for source := range Settings.Files.HDHR {
+			sourceIDs[source] = struct{}{}
+		}
+	})
+
+	activeHashes := make(map[string]struct{},
+		len(Data.Cache.Streams.Active))
+
+	for _, hash := range Data.Cache.Streams.Active {
+		activeHashes[hash] = struct{}{}
 	}
 
-	for source := range Settings.Files.HDHR {
-		sourceIDs = append(sourceIDs, source)
+	// Preserve mappings when provider data is unavailable.
+	if len(Data.XEPG.Channels) > 0 &&
+		(len(sourceIDs) == 0 || len(activeHashes) == 0) {
+
+		return errors.New(
+			"XEPG cleanup blocked: provider data unavailable while channel mappings exist",
+		)
 	}
 
-	showInfo("XEPG:" + fmt.Sprintf("Cleanup database"))
-	Data.XEPG.XEPGCount = 0
+	candidate := make(map[string]interface{},
+		len(Data.XEPG.Channels))
+
+	var activeCount int64
 
 	for id, dxc := range Data.XEPG.Channels {
 
-		var xepgChannel XEPGChannelStruct
-		err := json.Unmarshal([]byte(mapToJSON(dxc)), &xepgChannel)
-		if err == nil {
+		var channel XEPGChannelStruct
 
-			if xepgChannel.TvgName == "" {
-				xepgChannel.TvgName = xepgChannel.Name
-			}
+		if err := json.Unmarshal(
+			[]byte(mapToJSON(dxc)),
+			&channel,
+		); err != nil {
 
-			// Create consistent channel hash using URL as primary identifier
-			// Use TvgID when available, since names can change but IDs should remain stable
-			var hashInput string
-			if xepgChannel.TvgID != "" {
-				// Use TvgID when available for stable identification
-				hashInput = xepgChannel.URL + xepgChannel.TvgID + xepgChannel.FileM3UID
-			} else {
-				// Fall back to URL + FileM3UID only when TvgID is blank
-				hashInput = xepgChannel.URL + xepgChannel.FileM3UID
-			}
-			hash := md5.Sum([]byte(hashInput))
-			m3uChannelHash := hex.EncodeToString(hash[:])
-
-			if indexOfString(m3uChannelHash, Data.Cache.Streams.Active) == -1 {
-				delete(Data.XEPG.Channels, id)
-			} else {
-				if xepgChannel.XActive && !xepgChannel.XHideChannel {
-					Data.XEPG.XEPGCount++
-				}
-			}
-
-			if indexOfString(xepgChannel.FileM3UID, sourceIDs) == -1 {
-				delete(Data.XEPG.Channels, id)
-			}
-
+			return fmt.Errorf(
+				"XEPG cleanup channel decoding failed for %s: %w",
+				id,
+				err,
+			)
 		}
 
-	}
+		hashInput := channel.URL +
+			channel.TvgID +
+			channel.FileM3UID
 
-	err := saveMapToJSONFile(System.File.XEPG, Data.XEPG.Channels)
-	if err != nil {
-		ShowError(err, 000)
-		return
-	}
-
-	showInfo("XEPG Channels:" + fmt.Sprintf("%d", Data.XEPG.XEPGCount))
-
-	if len(Data.Streams.Active) > 0 && Data.XEPG.XEPGCount == 0 {
-		showWarning(2005)
-	}
-
-	return
-}
-
-// Remove duplicate channels from XEPG database using consistent hash logic
-func removeDuplicateChannels() {
-	showInfo("XEPG:" + "Remove duplicate channels")
-
-	// Track channels by hash to identify exact duplicates (same URL + name + source)
-	hashToChannelID := make(map[string]string)
-	var channelsToRemove []string
-	var duplicatesFound int
-
-	for id, dxc := range Data.XEPG.Channels {
-		var xepgChannel XEPGChannelStruct
-		err := json.Unmarshal([]byte(mapToJSON(dxc)), &xepgChannel)
-		if err != nil {
-			continue
-		}
-
-		if xepgChannel.TvgName == "" {
-			xepgChannel.TvgName = xepgChannel.Name
-		}
-
-		// Create consistent channel hash using URL as primary identifier
-		// Use TvgID when available, since names can change but IDs should remain stable
-		var hashInput string
-		if xepgChannel.TvgID != "" {
-			// Use TvgID when available for stable identification
-			hashInput = xepgChannel.URL + xepgChannel.TvgID + xepgChannel.FileM3UID
-		} else {
-			// Fall back to URL + FileM3UID only when TvgID is blank
-			hashInput = xepgChannel.URL + xepgChannel.FileM3UID
-		}
 		hash := md5.Sum([]byte(hashInput))
 		channelHash := hex.EncodeToString(hash[:])
 
-		// Check for hash-based duplicates (exact same content)
-		if existingChannelID, exists := hashToChannelID[channelHash]; exists {
-			channelsToRemove = append(channelsToRemove, handleDuplicate(id, existingChannelID, "hash"))
-			duplicatesFound++
-		} else {
+		if _, exists := sourceIDs[channel.FileM3UID]; !exists {
+			continue
+		}
+
+		if _, exists := activeHashes[channelHash]; !exists {
+			continue
+		}
+
+		candidate[id] = dxc
+
+		if channel.XActive && !channel.XHideChannel {
+			activeCount++
+		}
+	}
+
+	// Do not publish an empty replacement for an existing database.
+	if len(Data.XEPG.Channels) > 0 && len(candidate) == 0 {
+		return errors.New(
+			"XEPG cleanup blocked: cleanup would remove all channel mappings",
+		)
+	}
+
+	if err := saveMapToJSONFile(
+		System.File.XEPG,
+		candidate,
+	); err != nil {
+
+		return fmt.Errorf(
+			"XEPG cleanup database save failed: %w",
+			err,
+		)
+	}
+
+	// Publish only after successful atomic persistence.
+	Data.XEPG.Channels = candidate
+	Data.XEPG.XEPGCount = activeCount
+
+	showInfo(fmt.Sprintf(
+		"XEPG Channels:%d",
+		activeCount,
+	))
+
+	if len(Data.Streams.Active) > 0 && activeCount == 0 {
+		showWarning(2005)
+	}
+
+	return nil
+}
+
+// Remove duplicate channels without modifying the live database
+// until the candidate database has been saved successfully.
+func removeDuplicateChannels() error {
+
+	showInfo("XEPG:Remove duplicate channels")
+
+	candidate := make(map[string]interface{},
+		len(Data.XEPG.Channels))
+
+	hashToChannelID := make(map[string]string)
+
+	ids := make([]string, 0, len(Data.XEPG.Channels))
+
+	for id := range Data.XEPG.Channels {
+		ids = append(ids, id)
+	}
+
+	// Stable iteration makes duplicate selection deterministic.
+	sort.Strings(ids)
+
+	duplicatesFound := 0
+
+	for _, id := range ids {
+
+		dxc := Data.XEPG.Channels[id]
+
+		var channel XEPGChannelStruct
+
+		if err := json.Unmarshal(
+			[]byte(mapToJSON(dxc)),
+			&channel,
+		); err != nil {
+
+			return fmt.Errorf(
+				"XEPG duplicate channel decoding failed for %s: %w",
+				id,
+				err,
+			)
+		}
+
+		hashInput := channel.URL +
+			channel.TvgID +
+			channel.FileM3UID
+
+		hash := md5.Sum([]byte(hashInput))
+		channelHash := hex.EncodeToString(hash[:])
+
+		existingID, exists := hashToChannelID[channelHash]
+
+		if !exists {
+			candidate[id] = dxc
 			hashToChannelID[channelHash] = id
+			continue
 		}
 
-		// DISABLED: Name-based duplicate removal - backup channels with different URLs are legitimate
-		// Only remove true duplicates (exact same URL + tvg-id + source) via hash-based detection
-		//
-		// Note: Channels like "NFL RedZone (1)", "NFL RedZone (2)", "NFL RedZone (3)" with same tvg-id
-		// but different URLs are backup channels and should be preserved, not treated as duplicates
-	}
+		duplicatesFound++
 
-	// Remove duplicate channels
-	for _, channelID := range channelsToRemove {
-		delete(Data.XEPG.Channels, channelID)
-	}
+		removeID := handleDuplicate(
+			id,
+			existingID,
+			"hash",
+		)
 
-	if duplicatesFound > 0 {
-		showInfo(fmt.Sprintf("XEPG:Removed %d duplicate channels", duplicatesFound))
-		// Save the cleaned database
-		err := saveMapToJSONFile(System.File.XEPG, Data.XEPG.Channels)
-		if err != nil {
-			ShowError(err, 000)
+		switch removeID {
+
+		case id:
+			// Keep the existing winner.
+
+		case existingID:
+			delete(candidate, existingID)
+
+			candidate[id] = dxc
+
+			// Future duplicates must be compared with
+			// the surviving channel, not the removed one.
+			hashToChannelID[channelHash] = id
+
+		default:
+			return errors.New(
+				"XEPG duplicate selection returned an invalid channel ID",
+			)
 		}
-	} else {
+	}
+
+	if duplicatesFound == 0 {
 		showInfo("XEPG:No duplicate channels found")
+		return nil
 	}
+
+	if err := saveMapToJSONFile(
+		System.File.XEPG,
+		candidate,
+	); err != nil {
+
+		return fmt.Errorf(
+			"XEPG duplicate cleanup database save failed: %w",
+			err,
+		)
+	}
+
+	Data.XEPG.Channels = candidate
+
+	showInfo(fmt.Sprintf(
+		"XEPG:Removed %d duplicate channels",
+		duplicatesFound,
+	))
+
+	return nil
 }
 
 // Helper function to clean channel names for duplicate detection
